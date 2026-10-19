@@ -47,8 +47,20 @@ import kotlin.coroutines.resumeWithException
 interface AuthProvider {
     suspend fun accessToken(): String?
 
-    /** @return true when a new access token is available. */
-    suspend fun refresh(): Boolean
+    /**
+     * Renews the token pair when [usedToken] is null or is still the current
+     * access token. When another caller already renewed it, there is nothing
+     * to do and the call simply succeeds.
+     *
+     * @return true when a usable access token is available.
+     */
+    suspend fun refresh(usedToken: String? = null): Boolean
+
+    /**
+     * A token fit for a long-lived link (the websocket): renewed shortly before
+     * it expires so a reconnect never knocks on the relay with a dead token.
+     */
+    suspend fun freshAccessToken(): String? = accessToken()
 }
 
 /**
@@ -280,7 +292,7 @@ class ApiClient(
             response.use { res ->
                 val text = res.body?.string().orEmpty()
 
-                if (res.code == 401 && authenticated && !renewed && auth.refresh()) {
+                if (res.code == 401 && authenticated && !renewed && auth.refresh(token)) {
                     renewed = true
                     return@use
                 }

@@ -57,7 +57,6 @@ import com.brahim.whatscraft.di.Container
 import com.brahim.whatscraft.ui.components.Avatar
 import com.brahim.whatscraft.ui.components.EmptyState
 import com.brahim.whatscraft.ui.components.SectionHeader
-import com.brahim.whatscraft.util.TimeFormat
 import kotlinx.coroutines.launch
 
 /**
@@ -218,10 +217,8 @@ fun ContactsScreen(
                         contact = contact,
                         subtitle = when {
                             contact.keyChanged -> "Security code changed - tap for details"
-                            contact.online -> "online"
-                            contact.lastSeen != null -> TimeFormat.lastSeen(contact.lastSeen)
                             contact.about.isNotBlank() -> contact.about
-                            else -> "connected"
+                            else -> "@${contact.username}"
                         },
                         onClick = {
                             scope.launch {
@@ -330,7 +327,6 @@ private fun ContactRow(
             name = contact.displayName.ifBlank { contact.username },
             shade = contact.shade,
             size = 52.dp,
-            online = contact.online,
         )
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {

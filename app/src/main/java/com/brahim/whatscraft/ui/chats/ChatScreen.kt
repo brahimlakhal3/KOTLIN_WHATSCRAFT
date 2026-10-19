@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -71,7 +73,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -89,6 +90,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Placeholder
@@ -110,7 +112,9 @@ import com.brahim.whatscraft.di.Container
 import com.brahim.whatscraft.ui.components.Avatar
 import com.brahim.whatscraft.ui.components.EncryptionNote
 import com.brahim.whatscraft.ui.components.TypingDots
-import com.brahim.whatscraft.ui.theme.BubbleShapes
+import com.brahim.whatscraft.ui.theme.LocalBubbleStyle
+import com.brahim.whatscraft.ui.theme.LocalReduceMotion
+import com.brahim.whatscraft.ui.theme.bubbleShape
 import com.brahim.whatscraft.ui.theme.Motion
 import com.brahim.whatscraft.ui.theme.SystemBarIcons
 import com.brahim.whatscraft.ui.theme.WhatscraftColors
@@ -141,6 +145,7 @@ fun ChatScreen(
     val conversations by repository.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
     val contacts by repository.contacts.collectAsStateWithLifecycle(initialValue = emptyList())
     val messages by repository.messages(conversationId).collectAsStateWithLifecycle(initialValue = emptyList())
+    val appSettings by container.settings.settings.collectAsStateWithLifecycle()
 
     val summary = conversations.firstOrNull { it.id == conversationId }
     val peer = contacts.firstOrNull { it.id == summary?.peerId }
@@ -173,12 +178,6 @@ fun ChatScreen(
     val typingGuard = remember(conversationId) { TypingGuard() }
 
     val listState = rememberLazyListState()
-    val nearBottom by remember {
-        derivedStateOf {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            last >= listState.layoutInfo.totalItemsCount - 3
-        }
-    }
 
     LaunchedEffect(conversationId) {
         repository.setActiveConversation(conversationId)
@@ -193,9 +192,10 @@ fun ChatScreen(
             if (spent < ENTRY_LOADING_MS) delay(ENTRY_LOADING_MS - spent)
             // Give the collected list a beat to pick up what was just stored,
             // so the spinner hands over to messages, never to a blank frame.
-            repeat(20) {
-                if (messages.isNotEmpty()) return@repeat
+            var waited = 0L
+            while (messages.isEmpty() && waited < 200L) {
                 delay(10)
+                waited += 10
             }
             loadingHistory = false
         }
@@ -234,10 +234,19 @@ fun ChatScreen(
             }
         } else {
             freshId = newest.id
-            if (nearBottom || newest.mine) {
-                listState.animateScrollToItem(bottom)
-            }
+            // Sent or received, the conversation always comes back to the
+            // newest line - this is a chat, not a log to lose your place in.
+            runCatching { listState.animateScrollToItem(bottom) }
         }
+    }
+
+    // Opening the keyboard means writing: the thread rises with it and stays
+    // parked on the newest message.
+    val density = LocalDensity.current
+    val imeOpen = WindowInsets.ime.getBottom(density) > 0
+    LaunchedEffect(imeOpen) {
+        if (!imeOpen || thread.isEmpty()) return@LaunchedEffect
+        runCatching { listState.animateScrollToItem(lastScrollIndex(thread.size, atStart)) }
     }
 
     // The pop-in lasts a moment; after that the bubble is just a bubble again.
@@ -310,7 +319,6 @@ fun ChatScreen(
                             name = summary?.title ?: "Chat",
                             shade = summary?.shade ?: 0,
                             size = 38.dp,
-                            online = summary?.online ?: false,
                         )
                         Spacer(Modifier.width(12.dp))
                         Column {
@@ -320,19 +328,36 @@ fun ChatScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            val status = when {
-                                summary?.typing == true -> "typing"
-                                summary?.online == true -> "online"
-                                peer?.lastSeen != null && peer.lastSeen > 0 ->
-                                    TimeFormat.lastSeen(peer.lastSeen)
-                                else -> "end-to-end encrypted"
+                            if (summary?.typing == true) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    TypingDots(color = WhatscraftColors.onHeader)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = "typing",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = WhatscraftColors.onHeader.copy(alpha = 0.9f),
+                                        maxLines = 1,
+                                    )
+                                }
+                            } else {
+                                // The one line that matters in a private chat: the
+                                // lock and what it promises. No presence, no clocks.
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Lock,
+                                        contentDescription = null,
+                                        tint = WhatscraftColors.onHeader.copy(alpha = 0.9f),
+                                        modifier = Modifier.size(12.dp),
+                                    )
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(
+                                        text = "End-to-end encrypted",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = WhatscraftColors.onHeader.copy(alpha = 0.9f),
+                                        maxLines = 1,
+                                    )
+                                }
                             }
-                            Text(
-                                text = status,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = WhatscraftColors.onHeader.copy(alpha = 0.75f),
-                                maxLines = 1,
-                            )
                         }
                     }
                 },
@@ -467,6 +492,8 @@ fun ChatScreen(
                                     message = item.message,
                                     clock = item.clock,
                                     fresh = item.message.id == freshId,
+                                    doubleTapHeart = appSettings.doubleTapHeart,
+                                    hapticsEnabled = appSettings.haptics,
                                     onRetry = { scope.launch { repository.resend(item.message.id) } },
                                     onReact = { emoji ->
                                         scope.launch {
@@ -490,13 +517,14 @@ fun ChatScreen(
             }
 
             Composer(
-                enterToSend = container.settings.current.enterToSend,
+                enterToSend = appSettings.enterToSend,
+                hapticsEnabled = appSettings.haptics,
                 onDraftChanged = ::onDraftChanged,
                 onSend = ::send,
                 onHeightChanged = {
                     // Only when the composer genuinely grows (a new line), not
                     // on every character.
-                    if (thread.isNotEmpty() && nearBottom) {
+                    if (thread.isNotEmpty()) {
                         scope.launch { listState.scrollToItem(lastScrollIndex(thread.size, atStart)) }
                     }
                 },
@@ -619,6 +647,7 @@ private fun LoadMoreRow(loading: Boolean, onClick: () -> Unit) {
 @Composable
 private fun Composer(
     enterToSend: Boolean,
+    hapticsEnabled: Boolean,
     onDraftChanged: (String) -> Unit,
     onSend: (String) -> Unit,
     onHeightChanged: () -> Unit,
@@ -642,7 +671,7 @@ private fun Composer(
 
     fun submit() {
         if (text.isBlank()) return
-        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
         val body = text
         text = ""
         onSend(body)
@@ -711,21 +740,28 @@ private fun MessageBubble(
     message: ChatMessage,
     clock: String,
     fresh: Boolean,
+    doubleTapHeart: Boolean,
+    hapticsEnabled: Boolean,
     onRetry: () -> Unit,
     onReact: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val clipboard = LocalClipboardManager.current
     val haptics = LocalHapticFeedback.current
+    val reduceMotion = LocalReduceMotion.current
     val undecryptable = message.status == MessageStatus.Undecryptable
     var menuOpen by remember(message.id) { mutableStateOf(false) }
+
+    fun tick() {
+        if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
 
     // A just-sent or just-received bubble pops in from its own corner. Bubbles
     // that merely scroll into view are already at rest. The flag arrives one
     // frame after the item is composed, so the animation starts here.
     val entrance = remember(message.id) { Animatable(1f) }
     LaunchedEffect(message.id, fresh) {
-        if (fresh) {
+        if (fresh && !reduceMotion) {
             entrance.snapTo(0f)
             entrance.animateTo(
                 targetValue = 1f,
@@ -762,7 +798,7 @@ private fun MessageBubble(
                         message.mine -> WhatscraftColors.bubbleOutgoing
                         else -> WhatscraftColors.bubbleIncoming
                     },
-                    shape = if (message.mine) BubbleShapes.outgoing else BubbleShapes.incoming,
+                    shape = bubbleShape(LocalBubbleStyle.current, message.mine),
                     modifier = Modifier
                         .widthIn(max = 320.dp)
                         .pointerInput(message.id) {
@@ -776,11 +812,13 @@ private fun MessageBubble(
                                     }
                                 },
                                 onDoubleTap = {
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onReact(if (heartMine) "" else HEART_REACTION)
+                                    if (doubleTapHeart) {
+                                        tick()
+                                        onReact(if (heartMine) "" else HEART_REACTION)
+                                    }
                                 },
                                 onLongPress = {
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    tick()
                                     menuOpen = true
                                 },
                             )

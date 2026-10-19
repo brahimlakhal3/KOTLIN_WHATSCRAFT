@@ -67,17 +67,6 @@ object TimeFormat {
         }
     }
 
-    /** "online", "last seen 5 min ago", "last seen yesterday at 21:04". */
-    fun lastSeen(millis: Long, now: Long = System.currentTimeMillis()): String {
-        if (millis <= 0) return "offline"
-        val minutes = (now - millis) / 60_000L
-        return when {
-            minutes < 1 -> "last seen just now"
-            minutes < 60 -> "last seen ${minutes} min ago"
-            else -> "last seen ${chatList(millis, now).lowercase()} at ${clock.format(Date(millis))}"
-        }
-    }
-
     fun daysBetween(millis: Long, now: Long): Long {
         val then = Calendar.getInstance().apply {
             timeInMillis = millis

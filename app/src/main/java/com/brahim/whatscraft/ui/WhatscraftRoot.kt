@@ -30,6 +30,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -106,8 +107,12 @@ fun WhatscraftRoot(
     LaunchedEffect(error) {
         val message = error
         if (message != null) {
-            snackbar.showSnackbar(message)
             container.repository.clearError()
+            snackbar.showSnackbar(
+                message = message,
+                withDismissAction = true,
+                duration = SnackbarDuration.Short,
+            )
         }
     }
 
@@ -216,6 +221,9 @@ private fun AppNavigation(
     nav: NavHostController,
     padding: PaddingValues,
 ) {
+    val appSettings by container.settings.settings.collectAsStateWithLifecycle()
+    val reduceMotion = appSettings.reduceMotion
+
     NavHost(
         navController = nav,
         startDestination = Routes.Chats,
@@ -223,20 +231,36 @@ private fun AppNavigation(
             .fillMaxSize()
             .padding(padding),
         enterTransition = {
-            slideInHorizontally(animationSpec = Motion.screenEnter()) { width -> width / 5 } +
-                fadeIn(animationSpec = Motion.screenEnter())
+            if (reduceMotion) {
+                fadeIn(animationSpec = tween(150))
+            } else {
+                slideInHorizontally(animationSpec = Motion.screenEnter()) { width -> width / 5 } +
+                    fadeIn(animationSpec = Motion.screenEnter())
+            }
         },
         exitTransition = {
-            slideOutHorizontally(animationSpec = Motion.screenExit()) { width -> -width / 8 } +
-                fadeOut(animationSpec = Motion.screenExit())
+            if (reduceMotion) {
+                fadeOut(animationSpec = tween(100))
+            } else {
+                slideOutHorizontally(animationSpec = Motion.screenExit()) { width -> -width / 8 } +
+                    fadeOut(animationSpec = Motion.screenExit())
+            }
         },
         popEnterTransition = {
-            slideInHorizontally(animationSpec = Motion.screenEnter()) { width -> -width / 8 } +
-                fadeIn(animationSpec = Motion.screenEnter())
+            if (reduceMotion) {
+                fadeIn(animationSpec = tween(150))
+            } else {
+                slideInHorizontally(animationSpec = Motion.screenEnter()) { width -> -width / 8 } +
+                    fadeIn(animationSpec = Motion.screenEnter())
+            }
         },
         popExitTransition = {
-            slideOutHorizontally(animationSpec = Motion.screenExit()) { width -> width / 5 } +
-                fadeOut(animationSpec = Motion.screenExit())
+            if (reduceMotion) {
+                fadeOut(animationSpec = tween(100))
+            } else {
+                slideOutHorizontally(animationSpec = Motion.screenExit()) { width -> width / 5 } +
+                    fadeOut(animationSpec = Motion.screenExit())
+            }
         },
     ) {
         composable(Routes.Chats) {

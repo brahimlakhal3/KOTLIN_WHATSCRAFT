@@ -10,6 +10,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import com.brahim.whatscraft.data.BubbleStyle
 import com.brahim.whatscraft.data.Palette
 
 private val MonoLight = lightColorScheme(
@@ -239,6 +240,12 @@ val LocalDarkTheme = staticCompositionLocalOf { false }
 /** The active colour story. */
 val LocalPalette = staticCompositionLocalOf { Palette.Monochrome }
 
+/** Corner language for message bubbles. */
+val LocalBubbleStyle = staticCompositionLocalOf { BubbleStyle.Rounded }
+
+/** When true, entrance/pop animations are skipped. */
+val LocalReduceMotion = staticCompositionLocalOf { false }
+
 /** One accent tint: header, buttons, outgoing bubble and wallpaper. */
 private class Accent(
     val header: Color,
@@ -276,10 +283,60 @@ private val SunsetColors = Accent(
     bubbleDark = SunsetBubbleDark,
 )
 
+private val ForestColors = Accent(
+    header = ForestHeader,
+    primary = ForestPrimary,
+    pale = ForestPale,
+    canvasLight = ForestCanvasLight,
+    canvasDark = ForestCanvasDark,
+    bubbleDark = ForestBubbleDark,
+)
+
+private val RoseColors = Accent(
+    header = RoseHeader,
+    primary = RosePrimary,
+    pale = RosePale,
+    canvasLight = RoseCanvasLight,
+    canvasDark = RoseCanvasDark,
+    bubbleDark = RoseBubbleDark,
+)
+
+private val LavenderColors = Accent(
+    header = LavenderHeader,
+    primary = LavenderPrimary,
+    pale = LavenderPale,
+    canvasLight = LavenderCanvasLight,
+    canvasDark = LavenderCanvasDark,
+    bubbleDark = LavenderBubbleDark,
+)
+
+private val SandColors = Accent(
+    header = SandHeader,
+    primary = SandPrimary,
+    pale = SandPale,
+    canvasLight = SandCanvasLight,
+    canvasDark = SandCanvasDark,
+    bubbleDark = SandBubbleDark,
+)
+
+private val MidnightColors = Accent(
+    header = MidnightHeader,
+    primary = MidnightPrimary,
+    pale = MidnightPale,
+    canvasLight = MidnightCanvasLight,
+    canvasDark = MidnightCanvasDark,
+    bubbleDark = MidnightBubbleDark,
+)
+
 private val Accents = mapOf(
     Palette.Ocean to OceanColors,
     Palette.Berry to BerryColors,
     Palette.Sunset to SunsetColors,
+    Palette.Forest to ForestColors,
+    Palette.Rose to RoseColors,
+    Palette.Lavender to LavenderColors,
+    Palette.Sand to SandColors,
+    Palette.Midnight to MidnightColors,
 )
 
 /** The dot shown in Settings for each palette. */
@@ -289,6 +346,11 @@ fun paletteSwatch(palette: Palette, dark: Boolean): Color = when (palette) {
     Palette.Ocean -> OceanPrimary
     Palette.Berry -> BerryPrimary
     Palette.Sunset -> SunsetPrimary
+    Palette.Forest -> ForestPrimary
+    Palette.Rose -> RosePrimary
+    Palette.Lavender -> LavenderPrimary
+    Palette.Sand -> SandPrimary
+    Palette.Midnight -> MidnightPrimary
 }
 
 private fun accentLightScheme(accent: Accent) = MonoLight.copy(
@@ -413,6 +475,9 @@ fun WhatscraftTheme(
     /** OLED true-black canvas. Monochrome only; WhatsApp keeps its own night palette. */
     pureBlack: Boolean = false,
     palette: Palette = Palette.Monochrome,
+    textScale: Float = 1f,
+    bubbleStyle: BubbleStyle = BubbleStyle.Rounded,
+    reduceMotion: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val scheme = when (palette) {
@@ -424,7 +489,15 @@ fun WhatscraftTheme(
 
         Palette.WhatsApp -> if (darkTheme) WhatsAppDarkScheme else WhatsAppLightScheme
 
-        Palette.Ocean, Palette.Berry, Palette.Sunset -> {
+        Palette.Ocean,
+        Palette.Berry,
+        Palette.Sunset,
+        Palette.Forest,
+        Palette.Rose,
+        Palette.Lavender,
+        Palette.Sand,
+        Palette.Midnight,
+        -> {
             val accent = Accents.getValue(palette)
             if (darkTheme) accentDarkScheme(accent) else accentLightScheme(accent)
         }
@@ -433,10 +506,12 @@ fun WhatscraftTheme(
     CompositionLocalProvider(
         LocalDarkTheme provides darkTheme,
         LocalPalette provides palette,
+        LocalBubbleStyle provides bubbleStyle,
+        LocalReduceMotion provides reduceMotion,
     ) {
         MaterialTheme(
             colorScheme = scheme,
-            typography = WhatscraftTypography,
+            typography = typographyFor(textScale),
             shapes = WhatscraftShapes,
         ) {
             // The system bars follow the surface behind them; a chat screen

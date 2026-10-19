@@ -39,6 +39,9 @@ class MainActivity : ComponentActivity() {
                 darkTheme = settings.themeMode.isDark(isSystemInDarkTheme()),
                 pureBlack = settings.pureBlack,
                 palette = settings.palette,
+                textScale = settings.textSize.scale,
+                bubbleStyle = settings.bubbleStyle,
+                reduceMotion = settings.reduceMotion,
             ) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     WhatscraftRoot(

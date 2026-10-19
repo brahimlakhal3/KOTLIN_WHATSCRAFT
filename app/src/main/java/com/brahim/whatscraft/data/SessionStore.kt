@@ -2,6 +2,7 @@ package com.brahim.whatscraft.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.brahim.whatscraft.crypto.SecretVault
@@ -28,6 +29,8 @@ data class Session(
     val shade: Int,
     val accessToken: String,
     val refreshToken: String,
+    /** Wall-clock time (millis) when the access token stops working. */
+    val accessExpiresAt: Long = 0,
     /** True until the user has written down their recovery code. */
     val awaitingRecoveryCode: Boolean = false,
 )
@@ -65,6 +68,7 @@ class SessionStore(context: Context, private val vault: SecretVault) {
                         shade = prefs[KEY_SHADE]?.toIntOrNull() ?: 0,
                         accessToken = access,
                         refreshToken = refresh,
+                        accessExpiresAt = prefs[KEY_ACCESS_EXPIRES] ?: 0,
                         awaitingRecoveryCode = prefs[KEY_AWAITING_RECOVERY] == "true",
                     )
                 }.getOrNull()
@@ -78,6 +82,7 @@ class SessionStore(context: Context, private val vault: SecretVault) {
     val isSignedIn: Boolean get() = _session.value != null
 
     suspend fun save(auth: AuthResponse, awaitingRecoveryCode: Boolean) {
+        val expiresAt = System.currentTimeMillis() + auth.accessExpiresIn * 1_000L
         dataStore.edit { prefs ->
             prefs[KEY_USER_ID] = auth.user.id
             prefs[KEY_USERNAME] = auth.user.username
@@ -86,15 +91,38 @@ class SessionStore(context: Context, private val vault: SecretVault) {
             prefs[KEY_SHADE] = auth.user.shade.toString()
             prefs[KEY_ACCESS] = vault.sealString(auth.accessToken)
             prefs[KEY_REFRESH] = vault.sealString(auth.refreshToken)
+            prefs[KEY_ACCESS_EXPIRES] = expiresAt
             prefs[KEY_AWAITING_RECOVERY] = awaitingRecoveryCode.toString()
         }
+        // The disk collector catches up in a moment; until it does, callers
+        // must already see the new session and tokens.
+        _session.value = Session(
+            userId = auth.user.id,
+            username = auth.user.username,
+            displayName = auth.user.displayName,
+            about = auth.user.about,
+            shade = auth.user.shade,
+            accessToken = auth.accessToken,
+            refreshToken = auth.refreshToken,
+            accessExpiresAt = expiresAt,
+            awaitingRecoveryCode = awaitingRecoveryCode,
+        )
     }
 
-    suspend fun updateTokens(accessToken: String, refreshToken: String) {
+    suspend fun updateTokens(accessToken: String, refreshToken: String, expiresInSeconds: Int) {
+        val expiresAt = System.currentTimeMillis() + expiresInSeconds * 1_000L
         dataStore.edit { prefs ->
             prefs[KEY_ACCESS] = vault.sealString(accessToken)
             prefs[KEY_REFRESH] = vault.sealString(refreshToken)
+            prefs[KEY_ACCESS_EXPIRES] = expiresAt
         }
+        // Publish the new pair before the DataStore collector wakes up: a
+        // retrying request must never pick up the token it just replaced.
+        _session.value = _session.value?.copy(
+            accessToken = accessToken,
+            refreshToken = refreshToken,
+            accessExpiresAt = expiresAt,
+        )
     }
 
     suspend fun updateUser(user: UserDto) {
@@ -104,14 +132,22 @@ class SessionStore(context: Context, private val vault: SecretVault) {
             prefs[KEY_ABOUT] = user.about
             prefs[KEY_SHADE] = user.shade.toString()
         }
+        _session.value = _session.value?.copy(
+            username = user.username,
+            displayName = user.displayName,
+            about = user.about,
+            shade = user.shade,
+        )
     }
 
     suspend fun setAwaitingRecoveryCode(awaiting: Boolean) {
         dataStore.edit { prefs -> prefs[KEY_AWAITING_RECOVERY] = awaiting.toString() }
+        _session.value = _session.value?.copy(awaitingRecoveryCode = awaiting)
     }
 
     suspend fun clear() {
         dataStore.edit { prefs -> prefs.clear() }
+        _session.value = null
     }
 
     private companion object {
@@ -122,6 +158,7 @@ class SessionStore(context: Context, private val vault: SecretVault) {
         val KEY_SHADE = stringPreferencesKey("shade")
         val KEY_ACCESS = stringPreferencesKey("access_token")
         val KEY_REFRESH = stringPreferencesKey("refresh_token")
+        val KEY_ACCESS_EXPIRES = longPreferencesKey("access_expires_at")
         val KEY_AWAITING_RECOVERY = stringPreferencesKey("awaiting_recovery_code")
     }
 }
@@ -129,6 +166,10 @@ class SessionStore(context: Context, private val vault: SecretVault) {
 /**
  * Owns the access/refresh token pair: hands out the current access token and
  * renews it (once at a time) when the relay answers 401.
+ *
+ * A missing session, a flaky network or a relay that is waking up must never
+ * look like a signed-out user: only an explicit rejection of the refresh token
+ * ends the session.
  */
 class SessionManager(
     private val api: ApiClient,
@@ -139,16 +180,37 @@ class SessionManager(
 
     override suspend fun accessToken(): String? = sessions.current?.accessToken
 
-    override suspend fun refresh(): Boolean = refreshMutex.withLock {
+    override suspend fun freshAccessToken(): String? {
+        val session = sessions.current ?: return null
+        val expiring = session.accessExpiresAt > 0 &&
+            session.accessExpiresAt - System.currentTimeMillis() < FRESH_MARGIN_MS
+        if (!expiring) return session.accessToken
+        return if (refresh(usedToken = session.accessToken)) accessToken() else session.accessToken
+    }
+
+    override suspend fun refresh(usedToken: String?): Boolean = refreshMutex.withLock {
         val current = sessions.current ?: return false
-        return try {
-            val auth = api.refreshSession(RefreshRequest(current.refreshToken))
-            sessions.updateTokens(auth.accessToken, auth.refreshToken)
-            true
-        } catch (_: ApiException) {
-            false
+        // Another caller already renewed the pair while this one waited: there
+        // is nothing left to do.
+        if (usedToken != null && current.accessToken != usedToken) return true
+
+        val auth = try {
+            api.refreshSession(RefreshRequest(current.refreshToken))
+        } catch (rejected: ApiException) {
+            // A 401 here means the refresh token itself is dead (revoked,
+            // expired, account deleted). Every other failure is transient.
+            if (rejected.status == 401) sessions.clear()
+            return false
         } catch (_: Exception) {
-            false
+            return false
         }
+
+        sessions.updateTokens(auth.accessToken, auth.refreshToken, auth.accessExpiresIn)
+        true
+    }
+
+    private companion object {
+        /** Renew a little before the relay would reject the token. */
+        const val FRESH_MARGIN_MS = 90_000L
     }
 }

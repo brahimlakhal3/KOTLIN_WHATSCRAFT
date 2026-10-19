@@ -1,10 +1,20 @@
 package com.brahim.whatscraft.ui.settings
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,526 +22,221 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.ColorLens
-import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.brahim.whatscraft.BuildConfig
-import com.brahim.whatscraft.data.Palette
+import com.brahim.whatscraft.data.Session
 import com.brahim.whatscraft.data.ThemeMode
 import com.brahim.whatscraft.di.Container
 import com.brahim.whatscraft.ui.components.Avatar
-import com.brahim.whatscraft.ui.components.EncryptionNote
-import com.brahim.whatscraft.ui.components.SectionHeader
-import com.brahim.whatscraft.ui.components.SettingsRow
-import com.brahim.whatscraft.ui.theme.Ink
+import com.brahim.whatscraft.ui.components.ConnectionPill
+import com.brahim.whatscraft.ui.theme.Motion
+import com.brahim.whatscraft.ui.theme.WhatscraftColors
 import com.brahim.whatscraft.ui.theme.paletteSwatch
 import com.brahim.whatscraft.util.TimeFormat
 import kotlinx.coroutines.launch
 
+/** One page of the settings stack. The home page is the hub. */
+internal enum class SettingsPage(val title: String) {
+    Home("Settings"),
+    Profile("Profile"),
+    Encryption("Encryption"),
+    Appearance("Appearance"),
+    Chats("Chats"),
+    Notifications("Notifications"),
+    Privacy("Privacy"),
+    Relay("Relay"),
+    Account("Account"),
+    About("About"),
+}
+
 /**
- * Settings: profile, encryption keys, appearance, notifications, privacy and
- * the two irreversible actions.
+ * Settings as a small stack of pages instead of one endless scroll: a hub with
+ * the profile card and one row per topic, then a focused page for each.
  */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     container: Container,
     onSignedOut: () -> Unit,
     modifier: Modifier = Modifier,
-) {    val scope = rememberCoroutineScope()
+) {
+    val scope = rememberCoroutineScope()
     val settings by container.settings.settings.collectAsStateWithLifecycle()
     val session by container.sessions.session.collectAsStateWithLifecycle()
+    val connection by container.socket.state.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
 
+    var page by rememberSaveable { mutableStateOf(SettingsPage.Home) }
+    var direction by remember { mutableIntStateOf(1) }
+
+    fun open(target: SettingsPage) {
+        direction = if (target.ordinal >= page.ordinal) 1 else -1
+        page = target
+    }
+
+    BackHandler(enabled = page != SettingsPage.Home) { open(SettingsPage.Home) }
+
+    // Everything modal lives here so each page stays a plain list of rows.
     var editingProfile by remember { mutableStateOf(false) }
     var recoveryCode by remember { mutableStateOf<String?>(null) }
     var changingPassword by remember { mutableStateOf(false) }
     var deletingAccount by remember { mutableStateOf(false) }
     var rotatingKeys by remember { mutableStateOf(false) }
-    var serverUrl by remember { mutableStateOf(settings.serverUrl) }
-    var serverStatus by remember { mutableStateOf<String?>(null) }
-    var checkingServer by remember { mutableStateOf(false) }
     var clearingMessages by remember { mutableStateOf(false) }
 
-    LaunchedEffect(settings.serverUrl) { serverUrl = settings.serverUrl }
-
-    val user = session
-
-    Scaffold(
-        modifier = modifier,
-        containerColor = MaterialTheme.colorScheme.background,
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-        ) {
-            item(key = "title") {
-                Column(Modifier.padding(horizontal = 20.dp)) {
-                    Spacer(Modifier.height(20.dp))
-                    Text("Settings", style = MaterialTheme.typography.headlineMedium)
-                }
+    AnimatedContent(
+        targetState = page,
+        transitionSpec = {
+            val dir = direction
+            if (settings.reduceMotion) {
+                fadeIn(tween(120)).togetherWith(fadeOut(tween(90)))
+            } else {
+                (
+                    slideInHorizontally(Motion.screenEnter()) { width -> dir * width / 5 } +
+                        fadeIn(Motion.screenEnter())
+                    ).togetherWith(
+                    slideOutHorizontally(Motion.screenExit()) { width -> -dir * width / 8 } +
+                        fadeOut(Motion.screenExit()),
+                ).using(SizeTransform(clip = false))
             }
+        },
+        label = "settings-page",
+        modifier = modifier.fillMaxSize(),
+    ) { target ->
+        when (target) {
+            SettingsPage.Home -> SettingsHome(
+                settings = settings,
+                user = session,
+                connection = connection,
+                onOpen = ::open,
+                onEditProfile = { open(SettingsPage.Profile) },
+            )
 
-            item(key = "profile") {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(
-                            name = user?.displayName?.ifBlank { user.username } ?: "You",
-                            shade = user?.shade ?: 0,
-                            size = 64.dp,
-                        )
-                        Spacer(Modifier.width(16.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                text = user?.displayName?.ifBlank { user.username } ?: "You",
-                                style = MaterialTheme.typography.titleLarge,
-                            )
-                            Text(
-                                text = "@${user?.username ?: ""}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            if (!user?.about.isNullOrBlank()) {
-                                Text(
-                                    text = user?.about.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                        OutlinedButton(
-                            onClick = { editingProfile = true },
-                            shape = MaterialTheme.shapes.small,
-                        ) {
-                            Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Edit")
-                        }
+            SettingsPage.Profile -> ProfilePage(
+                container = container,
+                user = session,
+                onBack = { open(SettingsPage.Home) },
+            )
+
+            SettingsPage.Encryption -> EncryptionPage(
+                container = container,
+                onBack = { open(SettingsPage.Home) },
+                onRecovery = {
+                    scope.launch {
+                        runCatching { container.api.rotateRecoveryCode() }
+                            .onSuccess { recoveryCode = it.recoveryCode }
                     }
-                }
-            }
+                },
+                onResetKey = { rotatingKeys = true },
+            )
 
-            item(key = "security-header") { SectionHeader("Encryption") }
-            item(key = "recovery") {
-                SettingsRow(
-                    title = "Recovery code",
-                    subtitle = "Get a fresh one-time code for this account",
-                    icon = Icons.Rounded.Key,
-                    onClick = {
-                        scope.launch {
-                            runCatching { container.api.rotateRecoveryCode() }
-                                .onSuccess { recoveryCode = it.recoveryCode }
-                        }
-                    },
-                )
-            }
-            item(key = "identity") {
-                SettingsRow(
-                    title = "This device's key",
-                    subtitle = "Copy it for a friend to check, or reset it if you are worried",
-                    icon = Icons.Rounded.VerifiedUser,
-                    onClick = {
-                        clipboard.setText(AnnotatedString(container.repository.myIdentityKey()))
-                    },
-                    trailing = {
-                        TextButton(onClick = { rotatingKeys = true }) { Text("Reset") }
-                    },
-                )
-            }
-            item(key = "password") {
-                SettingsRow(
-                    title = "Change password",
-                    subtitle = "You will stay signed in on this phone",
-                    icon = Icons.Rounded.Lock,
-                    onClick = { changingPassword = true },
-                )
-            }
+            SettingsPage.Appearance -> AppearancePage(
+                container = container,
+                settings = settings,
+                onBack = { open(SettingsPage.Home) },
+            )
 
-            item(key = "appearance-header") { SectionHeader("Appearance") }
-            item(key = "theme") {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Palette,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Spacer(Modifier.width(16.dp))
-                        Text("Theme", style = MaterialTheme.typography.bodyLarge)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        ThemeMode.entries.forEachIndexed { index, mode ->
-                            SegmentedButton(
-                                selected = settings.themeMode == mode,
-                                onClick = { scope.launch { container.settings.setThemeMode(mode) } },
-                                shape = SegmentedButtonDefaults.itemShape(index = index, count = ThemeMode.entries.size),
-                                label = {
-                                    Text(
-                                        when (mode) {
-                                            ThemeMode.System -> "System"
-                                            ThemeMode.Light -> "Light"
-                                            ThemeMode.Dark -> "Dark"
-                                        },
-                                    )
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-            item(key = "palette") {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.ColorLens,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Spacer(Modifier.width(16.dp))
-                        Column {
-                            Text("Colors", style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                text = paletteBlurb(settings.palette),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Palette.entries.forEach { choice ->
-                            val selected = settings.palette == choice
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(46.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.surfaceVariant
-                                        else Color.Transparent,
-                                    )
-                                    .clickable {
-                                        scope.launch { container.settings.setPalette(choice) }
-                                    },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(26.dp)
-                                        .clip(CircleShape)
-                                        .background(paletteSwatch(choice, dark = dark)),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    if (selected) {
-                                        Icon(
-                                            Icons.Rounded.Check,
-                                            contentDescription = null,
-                                            tint = if (choice == Palette.Monochrome && dark) Ink else Color.White,
-                                            modifier = Modifier.size(15.dp),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            item(key = "pure-black") {
-                SwitchRow(
-                    title = "True black",
-                    subtitle = "OLED black in dark monochrome",
-                    icon = Icons.Rounded.DarkMode,
-                    checked = settings.pureBlack,
-                    enabled = settings.palette == Palette.Monochrome,
-                    onChange = { scope.launch { container.settings.setPureBlack(it) } },
-                )
-            }
+            SettingsPage.Chats -> ChatsPage(
+                container = container,
+                settings = settings,
+                onBack = { open(SettingsPage.Home) },
+            )
 
-            item(key = "notifications-header") { SectionHeader("Notifications") }
-            item(key = "notifications") {
-                SwitchRow(
-                    title = "Message notifications",
-                    subtitle = "Nothing shows while a chat is open",
-                    icon = Icons.Rounded.Notifications,
-                    checked = settings.notificationsEnabled,
-                    onChange = { scope.launch { container.settings.setNotifications(it) } },
-                )
-            }
-            item(key = "preview") {
-                SwitchRow(
-                    title = "Show message text",
-                    subtitle = "Off keeps your words off the lock screen",
-                    icon = Icons.Rounded.Lock,
-                    checked = settings.showMessagePreview,
-                    onChange = { scope.launch { container.settings.setShowMessagePreview(it) } },
-                )
-            }
-            item(key = "relay") {
-                SwitchRow(
-                    title = "Stay connected",
-                    subtitle = "A quiet notification keeps messages arriving with the app closed",
-                    icon = Icons.Rounded.Refresh,
-                    checked = settings.backgroundRelay,
-                    onChange = {
-                        scope.launch { container.settings.setBackgroundRelay(it) }
-                        container.applyBackgroundPreference(it)
-                    },
-                )
-            }
+            SettingsPage.Notifications -> NotificationsPage(
+                container = container,
+                settings = settings,
+                onBack = { open(SettingsPage.Home) },
+                onBackgroundRelay = { enabled ->
+                    scope.launch { container.settings.setBackgroundRelay(enabled) }
+                    container.applyBackgroundPreference(enabled)
+                },
+            )
 
-            item(key = "privacy-header") { SectionHeader("Privacy") }
-            item(key = "receipts") {
-                SwitchRow(
-                    title = "Read receipts",
-                    subtitle = "Share when you have read a message",
-                    icon = Icons.Rounded.VerifiedUser,
-                    checked = settings.readReceipts,
-                    onChange = { scope.launch { container.settings.setReadReceipts(it) } },
-                )
-            }
-            item(key = "typing") {
-                SwitchRow(
-                    title = "Typing indicator",
-                    subtitle = "Show when you are writing",
-                    icon = Icons.Rounded.Edit,
-                    checked = settings.typingIndicators,
-                    onChange = { scope.launch { container.settings.setTypingIndicators(it) } },
-                )
-            }
-            item(key = "enter") {
-                SwitchRow(
-                    title = "Enter sends",
-                    subtitle = "Off: Enter adds a line break",
-                    icon = Icons.Rounded.Edit,
-                    checked = settings.enterToSend,
-                    onChange = { scope.launch { container.settings.setEnterToSend(it) } },
-                )
-            }
+            SettingsPage.Privacy -> PrivacyPage(
+                container = container,
+                settings = settings,
+                onBack = { open(SettingsPage.Home) },
+            )
 
-            item(key = "server-header") { SectionHeader("Relay") }
-            item(key = "server") {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Language,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp),
-                        )
-                        Spacer(Modifier.width(16.dp))
-                        Text("Server", style = MaterialTheme.typography.bodyLarge)
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = serverUrl,
-                        onValueChange = { serverUrl = it },
-                        placeholder = { Text("https://your-relay.example") },
-                        singleLine = true,
-                        shape = MaterialTheme.shapes.small,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Uri,
-                            imeAction = ImeAction.Done,
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    container.settings.setServerUrl(serverUrl)
-                                    serverStatus = "Saved"
-                                }
-                            },
-                            shape = MaterialTheme.shapes.small,
-                        ) {
-                            Text("Save")
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                scope.launch {
-                                    checkingServer = true
-                                    container.settings.setServerUrl(serverUrl)
-                                    val reachable = runCatching { container.api.health() }.getOrDefault(false)
-                                    serverStatus = if (reachable) "Reachable" else "No answer from that address"
-                                    checkingServer = false
-                                }
-                            },
-                            enabled = !checkingServer,
-                            shape = MaterialTheme.shapes.small,
-                        ) {
-                            if (checkingServer) {
-                                CircularProgressIndicator(
-                                    strokeWidth = 2.dp,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            } else {
-                                Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Text("Test")
-                        }
-                    }
-                    serverStatus?.let {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
+            SettingsPage.Relay -> RelayPage(
+                container = container,
+                settings = settings,
+                onBack = { open(SettingsPage.Home) },
+            )
 
-            item(key = "account-header") { SectionHeader("Account") }
-            item(key = "clear-messages") {
-                SettingsRow(
-                    title = "Delete all messages",
-                    subtitle = "Empties every conversation on this phone; contacts and keys stay",
-                    icon = Icons.Rounded.DeleteSweep,
-                    destructive = true,
-                    onClick = { clearingMessages = true },
-                )
-            }
-            item(key = "signout") {
-                SettingsRow(
-                    title = "Sign out",
-                    subtitle = "Messages stay encrypted on this phone",
-                    icon = Icons.Rounded.Logout,
-                    onClick = {
-                        scope.launch {
-                            container.repository.signOut()
-                            container.onSignedOut()
-                            onSignedOut()
-                        }
-                    },
-                )
-            }
-            item(key = "delete") {
-                SettingsRow(
-                    title = "Delete account",
-                    subtitle = "Removes your account and every key on this device",
-                    icon = Icons.Rounded.DeleteForever,
-                    destructive = true,
-                    onClick = { deletingAccount = true },
-                )
-            }
-
-            item(key = "about") {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 24.dp)) {
-                    EncryptionNote(modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = "Whatscraft ${BuildConfig.VERSION_NAME} - every message is encrypted " +
-                            "on your phone before it reaches the relay, and the relay only ever " +
-                            "stores encrypted bytes.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (settings.lastSyncedAt > 0) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = "Last synced ${TimeFormat.chatList(settings.lastSyncedAt)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+            SettingsPage.Account -> AccountPage(
+                user = session,
+                onBack = { open(SettingsPage.Home) },
+                onChangePassword = { changingPassword = true },
+                onClearMessages = { clearingMessages = true },
+                onSignOut = {
+                    scope.launch {
+                        container.repository.signOut()
+                        container.onSignedOut()
+                        onSignedOut()
                     }
-                }
-                Spacer(Modifier.height(28.dp))
-            }
+                },
+                onDeleteAccount = { deletingAccount = true },
+            )
+
+            SettingsPage.About -> AboutPage(
+                settings = settings,
+                onBack = { open(SettingsPage.Home) },
+            )
         }
     }
 
-    if (clearingMessages) {
-        AlertDialog(
-            onDismissRequest = { clearingMessages = false },
-            title = { Text("Delete all messages?") },
-            text = {
-                Text(
-                    "Every conversation on this phone will be emptied. Your contacts, " +
-                        "friends and encryption keys stay. The relay only ever held " +
-                        "ciphertext, so nothing readable is deleted there.",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        clearingMessages = false
-                        scope.launch { container.repository.clearAllMessages() }
-                    },
-                ) {
-                    Text("Delete all")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { clearingMessages = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    if (editingProfile && user != null) {
+    if (editingProfile && session != null) {
         EditProfileDialog(
-            displayName = user.displayName,
-            about = user.about,
+            displayName = session?.displayName.orEmpty(),
+            about = session?.about.orEmpty(),
             onSave = { name, about ->
                 scope.launch { runCatching { container.repository.updateProfile(name, about) } }
             },
@@ -551,7 +256,10 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(14.dp))
-                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = MaterialTheme.shapes.small,
+                    ) {
                         Text(
                             text = code,
                             style = MaterialTheme.typography.titleMedium,
@@ -606,6 +314,31 @@ fun SettingsScreen(
         )
     }
 
+    if (clearingMessages) {
+        AlertDialog(
+            onDismissRequest = { clearingMessages = false },
+            title = { Text("Delete all messages?") },
+            text = {
+                Text(
+                    "Every conversation on this phone will be emptied. Your contacts, " +
+                        "friends and encryption keys stay. The relay only ever held " +
+                        "ciphertext, so nothing readable is deleted there.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        clearingMessages = false
+                        scope.launch { container.repository.clearAllMessages() }
+                    },
+                ) {
+                    Text("Delete all")
+                }
+            },
+            dismissButton = { TextButton(onClick = { clearingMessages = false }) { Text("Cancel") } },
+        )
+    }
+
     if (deletingAccount) {
         DeleteAccountDialog(
             onDelete = { password ->
@@ -618,30 +351,400 @@ fun SettingsScreen(
     }
 }
 
+// ------------------------------------------------------------------- home ---
+
 @Composable
-private fun SwitchRow(
-    title: String,
-    subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    checked: Boolean,
-    onChange: (Boolean) -> Unit,
-    enabled: Boolean = true,
+private fun SettingsHome(
+    settings: com.brahim.whatscraft.data.AppSettings,
+    user: Session?,
+    connection: com.brahim.whatscraft.data.SocketClient.State,
+    onOpen: (SettingsPage) -> Unit,
+    onEditProfile: () -> Unit,
 ) {
-    val toggle: (() -> Unit)? = if (enabled) ({ onChange(!checked) }) else null
-    SettingsRow(
-        title = title,
-        subtitle = subtitle,
-        icon = icon,
-        trailing = {
-            Switch(
-                checked = checked,
-                onCheckedChange = if (enabled) onChange else null,
-                enabled = enabled,
-            )
-        },
-        onClick = toggle,
-    )
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 26.dp, bottom = 32.dp),
+    ) {
+        item(key = "header") {
+            Column(Modifier.padding(horizontal = 8.dp)) {
+                Text("Settings", style = MaterialTheme.typography.headlineMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Your profile, this phone and the relay",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            ProfileCard(user = user, onClick = onEditProfile)
+        }
+
+        item(key = "security") {
+            SettingsGroup("Security") {
+                NavRow(
+                    icon = Icons.Rounded.Lock,
+                    title = "Encryption",
+                    subtitle = "Recovery code, this device's key, safety numbers",
+                    onClick = { onOpen(SettingsPage.Encryption) },
+                )
+            }
+        }
+
+        item(key = "looks") {
+            SettingsGroup("Looks") {
+                NavRow(
+                    icon = Icons.Rounded.Palette,
+                    title = "Theme & colors",
+                    subtitle = "${paletteLabel(settings.palette)} · ${themeLabel(settings.themeMode)}",
+                    onClick = { onOpen(SettingsPage.Appearance) },
+                )
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.TextFields,
+                    title = "Chat style",
+                    subtitle = "${settings.textSize.label} text · ${settings.bubbleStyle.label} bubbles",
+                    onClick = { onOpen(SettingsPage.Appearance) },
+                )
+            }
+        }
+
+        item(key = "behaviour") {
+            SettingsGroup("Behaviour") {
+                NavRow(
+                    icon = Icons.Rounded.Edit,
+                    title = "Chats",
+                    subtitle = if (settings.enterToSend) "Enter sends · double-tap reacts"
+                    else "Enter adds a line · double-tap reacts",
+                    onClick = { onOpen(SettingsPage.Chats) },
+                )
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.Notifications,
+                    title = "Notifications",
+                    subtitle = if (settings.notificationsEnabled) {
+                        if (settings.showMessagePreview) "On, with message text" else "On, text hidden"
+                    } else {
+                        "Off"
+                    },
+                    onClick = { onOpen(SettingsPage.Notifications) },
+                )
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.VerifiedUser,
+                    title = "Privacy",
+                    subtitle = "Read receipts and typing indicator",
+                    onClick = { onOpen(SettingsPage.Privacy) },
+                )
+            }
+        }
+
+        item(key = "connection") {
+            SettingsGroup("Connection") {
+                NavRow(
+                    icon = Icons.Rounded.Language,
+                    title = "Relay",
+                    subtitle = "Server address, sync, connection state",
+                    trailing = { ConnectionPill(connection) },
+                    onClick = { onOpen(SettingsPage.Relay) },
+                )
+            }
+        }
+
+        item(key = "account") {
+            SettingsGroup("Account") {
+                NavRow(
+                    icon = Icons.Rounded.Person,
+                    title = "Account",
+                    subtitle = "@${user?.username ?: ""} · password, messages, sign out",
+                    onClick = { onOpen(SettingsPage.Account) },
+                )
+                RowDivider()
+                NavRow(
+                    icon = Icons.Rounded.Info,
+                    title = "About Whatscraft",
+                    subtitle = "Version ${BuildConfig.VERSION_NAME}",
+                    onClick = { onOpen(SettingsPage.About) },
+                )
+            }
+        }
+    }
 }
+
+@Composable
+private fun ProfileCard(user: Session?, onClick: () -> Unit) {
+    val shape = MaterialTheme.shapes.large
+    val brush = Brush.linearGradient(
+        listOf(
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(brush)
+            .clickable(onClick = onClick)
+            .padding(18.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(
+                name = user?.displayName?.ifBlank { user.username } ?: "You",
+                shade = user?.shade ?: 0,
+                size = 62.dp,
+            )
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = user?.displayName?.ifBlank { user.username } ?: "You",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                Text(
+                    text = "@${user?.username ?: ""}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!user?.about.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = user?.about.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Edit,
+                    contentDescription = "Edit profile",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(17.dp),
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- profile ---
+
+@Composable
+private fun ProfilePage(
+    container: Container,
+    user: Session?,
+    onBack: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    var name by remember(user?.userId) { mutableStateOf(user?.displayName.orEmpty()) }
+    var about by remember(user?.userId) { mutableStateOf(user?.about.orEmpty()) }
+    var busy by remember { mutableStateOf(false) }
+    var saved by remember { mutableStateOf(false) }
+    var shade by remember(user?.userId) { mutableIntStateOf(user?.shade ?: 0) }
+
+    val displayName = user?.displayName?.ifBlank { user.username } ?: "You"
+    val dirty = name.trim() != (user?.displayName ?: "") || about.trim() != (user?.about ?: "")
+
+    SettingsPageScaffold(title = "Profile", onBack = onBack) {
+        item(key = "hero") {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Avatar(
+                    name = name.ifBlank { displayName },
+                    shade = shade,
+                    size = 92.dp,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(displayName, style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = "@${user?.username ?: ""}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!user?.about.isNullOrBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = user?.about.orEmpty(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+
+        item(key = "shade") {
+            SettingsGroup("Avatar tone") {
+                val tones = WhatscraftColors.avatarTones
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    tones.forEachIndexed { index, tone ->
+                        val selected = index == shade
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.surfaceVariant
+                                    else MaterialTheme.colorScheme.surfaceContainerLow,
+                                )
+                                .clickable {
+                                    shade = index
+                                    scope.launch {
+                                        runCatching { container.repository.updateShade(index) }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .clip(RoundedCornerShape(50))
+                                    .background(tone),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (selected) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.size(13.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item(key = "details") {
+            SettingsGroup("Details") {
+                Column(Modifier.padding(16.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = {
+                            name = it
+                            saved = false
+                        },
+                        label = { Text("Display name") },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = about,
+                        onValueChange = {
+                            about = it
+                            saved = false
+                        },
+                        label = { Text("About") },
+                        maxLines = 3,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            onClick = {
+                                busy = true
+                                scope.launch {
+                                    runCatching {
+                                        container.repository.updateProfile(
+                                            name.trim().ifBlank { null },
+                                            about.trim(),
+                                        )
+                                    }
+                                    busy = false
+                                    saved = true
+                                }
+                            },
+                            enabled = !busy && dirty,
+                            shape = MaterialTheme.shapes.small,
+                        ) {
+                            if (busy) {
+                                CircularProgressIndicator(
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text("Save")
+                        }
+                        if (saved && !dirty) {
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                text = "Saved",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item(key = "username") {
+            SettingsGroup("Username") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = "@${user?.username ?: ""}",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = "Friends find you with this. It never changes.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString("@${user?.username ?: ""}"))
+                        },
+                    ) {
+                        Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy username")
+                    }
+                }
+            }
+        }
+
+        item(key = "note") {
+            NoteCard(
+                text = "Your name and about are the only things friends see. Messages are " +
+                    "sealed on this phone before they ever leave it.",
+                icon = Icons.Rounded.Lock,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------- dialogs ---
 
 @Composable
 private fun EditProfileDialog(
@@ -687,148 +790,4 @@ private fun EditProfileDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
-}
-
-@Composable
-private fun ChangePasswordDialog(
-    onSubmit: suspend (String, String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var current by remember { mutableStateOf("") }
-    var next by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Change password") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = current,
-                    onValueChange = { current = it },
-                    label = { Text("Current password") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = next,
-                    onValueChange = { next = it },
-                    label = { Text("New password") },
-                    supportingText = { Text("At least 8 characters") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        },
-        confirmButton = {
-            val submit: () -> Unit = {
-                if (!busy) {
-                    error = when {
-                        next.length < 8 -> "New password is too short."
-                        else -> null
-                    }
-                    if (error == null) {
-                        busy = true
-                        scope.launch {
-                            try {
-                                onSubmit(current, next)
-                                onDismiss()
-                            } catch (failure: Exception) {
-                                error = failure.message ?: "Could not change the password."
-                            } finally {
-                                busy = false
-                            }
-                        }
-                    }
-                }
-            }
-            TextButton(onClick = submit, enabled = !busy) {
-                if (busy) {
-                    CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
-                } else {
-                    Text("Change")
-                }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
-private fun DeleteAccountDialog(
-    onDelete: suspend (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var password by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Delete your account?") },
-        text = {
-            Column {
-                Text(
-                    "This removes your account, your messages on the relay and every key on this " +
-                        "phone. It cannot be undone.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(14.dp))
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Your password") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !busy && password.isNotBlank(),
-                onClick = {
-                    busy = true
-                    scope.launch {
-                        try {
-                            onDelete(password)
-                        } catch (failure: Exception) {
-                            error = failure.message ?: "Could not delete the account."
-                            busy = false
-                        }
-                    }
-                },
-            ) {
-                Text("Delete", color = MaterialTheme.colorScheme.error)
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-private fun passwordChange(current: String, next: String) =
-    com.brahim.whatscraft.data.model.ChangePasswordRequest(currentPassword = current, newPassword = next)
-
-/** One line under "Colors" naming the active palette. */
-private fun paletteBlurb(palette: Palette): String = when (palette) {
-    Palette.Monochrome -> "Black and white, nothing else"
-    Palette.WhatsApp -> "Green accents and a beige conversation"
-    Palette.Ocean -> "Blue accents and a cool conversation"
-    Palette.Berry -> "Violet accents and a soft conversation"
-    Palette.Sunset -> "Orange accents and a warm conversation"
 }

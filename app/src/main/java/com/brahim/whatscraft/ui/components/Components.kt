@@ -7,7 +7,6 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,40 +54,24 @@ fun Avatar(
     shade: Int,
     modifier: Modifier = Modifier,
     size: Dp = 52.dp,
-    online: Boolean = false,
 ) {
     val tones = WhatscraftColors.avatarTones
     val tone = tones[((shade % tones.size) + tones.size) % tones.size]
     val initials = remember(name) { initialsOf(name) }
 
-    Box(modifier = modifier.size(size)) {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(tone),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = initials,
-                fontSize = (size.value * 0.36f).sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-        if (online) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .size(size * 0.26f)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(size * 0.045f)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
-                    .border(1.dp, MaterialTheme.colorScheme.surface, CircleShape),
-            )
-        }
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(tone),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = initials,
+            fontSize = (size.value * 0.36f).sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 

@@ -223,7 +223,7 @@ private fun ConversationRow(
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(name = summary.title, shade = summary.shade, online = summary.online)
+        Avatar(name = summary.title, shade = summary.shade)
 
         Spacer(Modifier.width(16.dp))
 

@@ -67,6 +67,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ChatRepository(
     private val api: ApiClient,
+    private val auth: AuthProvider,
     private val socket: SocketClient,
     private val database: AppDatabase,
     private val identityStore: IdentityStore,
@@ -263,7 +264,10 @@ class ChatRepository(
         socket.start(
             scope = scope,
             urlProvider = { api.webSocketUrl() },
-            tokenProvider = { sessions.current?.accessToken },
+            // Long-lived links outlive access tokens: the provider renews the
+            // pair shortly before it expires, so a reconnect after the relay
+            // drops an old token always carries a fresh one.
+            tokenProvider = { auth.freshAccessToken() },
         )
 
         scope.launch { refreshAll() }
@@ -301,7 +305,11 @@ class ChatRepository(
                 ),
             )
             devicePublished = true
-        }.onFailure { _lastError.value = it.message }
+        }.onFailure {
+            // Registering the keys is background housekeeping: it retries on
+            // the next sync, and a relay that is waking up must not throw a
+            // snackbar over whatever the user is reading.
+        }
     }
 
     suspend fun signOut() {
@@ -974,10 +982,9 @@ class ChatRepository(
 
             is ServerFrame.Read -> messagesDao.markReadUpTo(frame.conversationId, frame.seq)
 
-            is ServerFrame.Presence -> {
-                contactsDao.setPresence(frame.userId, frame.online, frame.lastSeen)
-                conversationsDao.setPeerOnline(frame.userId, frame.online)
-            }
+            // Presence is not part of this app: no dot, no "last seen", and no
+            // writes that would only sit unused in the database.
+            is ServerFrame.Presence -> Unit
 
             is ServerFrame.ConversationChanged -> {
                 val previous = conversationsDao.byId(frame.conversation.id)
@@ -1001,11 +1008,37 @@ class ChatRepository(
                 }
             }
 
-            is ServerFrame.Error -> {
-                _lastError.value = frame.message
-            }
+            is ServerFrame.Error -> handleServerError(frame)
 
             is ServerFrame.Pong -> Unit
+        }
+    }
+
+    /**
+     * The relay's `err` frames cover everything from a rejected handshake to a
+     * refused message. Background noise stays silent: auth is renewed on its
+     * own, and a refused send fails only that bubble instead of a snackbar out
+     * of nowhere.
+     */
+    private suspend fun handleServerError(frame: ServerFrame.Error) {
+        when {
+            frame.code == "unauthorized" || frame.code == "auth_required" -> {
+                runCatching { auth.refresh(usedToken = sessions.current?.accessToken) }
+                socket.reconnectNow()
+            }
+
+            frame.clientId != null -> {
+                val rejection = ApiException(frame.code, frame.message, 400)
+                val waiting = acks.remove(frame.clientId)
+                if (waiting != null) {
+                    waiting.completeExceptionally(rejection)
+                } else {
+                    markUndelivered(frame.clientId, MessageStatus.Failed)
+                    _lastError.value = frame.message
+                }
+            }
+
+            else -> Unit
         }
     }
 

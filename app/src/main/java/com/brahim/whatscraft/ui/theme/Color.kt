@@ -93,6 +93,41 @@ val SunsetCanvasLight = Color(0xFFFCF0E8)
 val SunsetCanvasDark = Color(0xFF1B1310)
 val SunsetBubbleDark = Color(0xFF8A3C0A)
 
+val ForestHeader = Color(0xFF14532D)
+val ForestPrimary = Color(0xFF1E7A45)
+val ForestPale = Color(0xFFD7F0DF)
+val ForestCanvasLight = Color(0xFFEDF7F0)
+val ForestCanvasDark = Color(0xFF0C1711)
+val ForestBubbleDark = Color(0xFF1B5E38)
+
+val RoseHeader = Color(0xFF9D174D)
+val RosePrimary = Color(0xFFDB2777)
+val RosePale = Color(0xFFFCE0EC)
+val RoseCanvasLight = Color(0xFFFDF0F5)
+val RoseCanvasDark = Color(0xFF1C0F15)
+val RoseBubbleDark = Color(0xFF9D174D)
+
+val LavenderHeader = Color(0xFF6D28D9)
+val LavenderPrimary = Color(0xFF8B5CF6)
+val LavenderPale = Color(0xFFEDE6FD)
+val LavenderCanvasLight = Color(0xFFF6F2FD)
+val LavenderCanvasDark = Color(0xFF141020)
+val LavenderBubbleDark = Color(0xFF5B21B6)
+
+val SandHeader = Color(0xFF8A5A16)
+val SandPrimary = Color(0xFFB07A2A)
+val SandPale = Color(0xFFF6E9D2)
+val SandCanvasLight = Color(0xFFFBF5EA)
+val SandCanvasDark = Color(0xFF1A150E)
+val SandBubbleDark = Color(0xFF7A4E12)
+
+val MidnightHeader = Color(0xFF1E1B4B)
+val MidnightPrimary = Color(0xFF4338CA)
+val MidnightPale = Color(0xFFE0DEFB)
+val MidnightCanvasLight = Color(0xFFEFF0FB)
+val MidnightCanvasDark = Color(0xFF0B0B16)
+val MidnightBubbleDark = Color(0xFF312E81)
+
 // ----------------------------------------------------------------- bubble ---
 /** Bubble tints: the outgoing side is always the opposite tone of the surface. */
 val BubbleOutLight = Color(0xFF0B0B0B)

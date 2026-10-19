@@ -52,16 +52,22 @@ class Container(context: Context) {
 
     val socket = SocketClient(http)
 
-    val api: ApiClient = ApiClient(http, auth = object : AuthProvider {
+    /** One token authority for both REST calls and the websocket. */
+    val auth: AuthProvider = object : AuthProvider {
         private val manager by lazy { SessionManager(api, sessions) }
 
         override suspend fun accessToken(): String? = manager.accessToken()
 
-        override suspend fun refresh(): Boolean = manager.refresh()
-    })
+        override suspend fun refresh(usedToken: String?): Boolean = manager.refresh(usedToken)
+
+        override suspend fun freshAccessToken(): String? = manager.freshAccessToken()
+    }
+
+    val api: ApiClient = ApiClient(http, auth = auth)
 
     val repository: ChatRepository = ChatRepository(
         api = api,
+        auth = auth,
         socket = socket,
         database = database,
         identityStore = identityStore,

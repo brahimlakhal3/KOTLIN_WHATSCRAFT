@@ -36,17 +36,45 @@ enum class ThemeMode {
 /**
  * The colour story of the app. [Monochrome] is Whatscraft's own black and
  * white, [WhatsApp] the familiar green-and-beige look, and the rest are single
- * accent tints that keep the quiet layout but colour the conversation.
+ * accent tints that colour the conversation while the layout stays quiet.
  */
 enum class Palette {
     Monochrome,
     WhatsApp,
     Ocean,
     Berry,
-    Sunset;
+    Sunset,
+    Forest,
+    Rose,
+    Lavender,
+    Sand,
+    Midnight;
 
     companion object {
         fun from(value: String?): Palette = entries.firstOrNull { it.name == value } ?: Monochrome
+    }
+}
+
+/** How large the type scale is drawn. */
+enum class TextSize(val scale: Float, val label: String) {
+    Small(0.9f, "Small"),
+    Default(1f, "Default"),
+    Large(1.12f, "Large"),
+    Largest(1.24f, "Largest");
+
+    companion object {
+        fun from(value: String?): TextSize = entries.firstOrNull { it.name == value } ?: Default
+    }
+}
+
+/** Corner language for the message bubbles. */
+enum class BubbleStyle(val label: String) {
+    Rounded("Rounded"),
+    Soft("Soft"),
+    Square("Square");
+
+    companion object {
+        fun from(value: String?): BubbleStyle = entries.firstOrNull { it.name == value } ?: Rounded
     }
 }
 
@@ -58,6 +86,14 @@ data class AppSettings(
     val palette: Palette = Palette.Monochrome,
     /** OLED true-black canvas in dark mode; off = graphite gray. Monochrome only. */
     val pureBlack: Boolean = false,
+    /** Multiplier for the whole type scale. */
+    val textSize: TextSize = TextSize.Default,
+    /** Corner language for message bubbles. */
+    val bubbleStyle: BubbleStyle = BubbleStyle.Rounded,
+    /** Double-tapping a bubble toggles the heart reaction. */
+    val doubleTapHeart: Boolean = true,
+    /** Skips the entrance and pop animations. */
+    val reduceMotion: Boolean = false,
     val notificationsEnabled: Boolean = true,
     /** Keep a foreground service connected so messages arrive with the app closed. */
     val backgroundRelay: Boolean = true,
@@ -100,6 +136,10 @@ class SettingsStore(context: Context) {
                     themeMode = ThemeMode.from(prefs[KEY_THEME]),
                     palette = Palette.from(prefs[KEY_PALETTE]),
                     pureBlack = prefs[KEY_PURE_BLACK] ?: false,
+                    textSize = TextSize.from(prefs[KEY_TEXT_SIZE]),
+                    bubbleStyle = BubbleStyle.from(prefs[KEY_BUBBLE_STYLE]),
+                    doubleTapHeart = prefs[KEY_DOUBLE_TAP] ?: true,
+                    reduceMotion = prefs[KEY_REDUCE_MOTION] ?: false,
                     notificationsEnabled = prefs[KEY_NOTIFICATIONS] ?: true,
                     backgroundRelay = prefs[KEY_BACKGROUND_RELAY] ?: true,
                     readReceipts = prefs[KEY_READ_RECEIPTS] ?: true,
@@ -123,6 +163,14 @@ class SettingsStore(context: Context) {
     suspend fun setPalette(palette: Palette) = put(KEY_PALETTE, palette.name)
 
     suspend fun setPureBlack(enabled: Boolean) = put(KEY_PURE_BLACK, enabled)
+
+    suspend fun setTextSize(size: TextSize) = put(KEY_TEXT_SIZE, size.name)
+
+    suspend fun setBubbleStyle(style: BubbleStyle) = put(KEY_BUBBLE_STYLE, style.name)
+
+    suspend fun setDoubleTapHeart(enabled: Boolean) = put(KEY_DOUBLE_TAP, enabled)
+
+    suspend fun setReduceMotion(enabled: Boolean) = put(KEY_REDUCE_MOTION, enabled)
 
     suspend fun setNotifications(enabled: Boolean) = put(KEY_NOTIFICATIONS, enabled)
 
@@ -169,6 +217,10 @@ class SettingsStore(context: Context) {
         val KEY_THEME = stringPreferencesKey("theme_mode")
         val KEY_PALETTE = stringPreferencesKey("palette")
         val KEY_PURE_BLACK = booleanPreferencesKey("pure_black")
+        val KEY_TEXT_SIZE = stringPreferencesKey("text_size")
+        val KEY_BUBBLE_STYLE = stringPreferencesKey("bubble_style")
+        val KEY_DOUBLE_TAP = booleanPreferencesKey("double_tap_heart")
+        val KEY_REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val KEY_NOTIFICATIONS = booleanPreferencesKey("notifications")
         val KEY_BACKGROUND_RELAY = booleanPreferencesKey("background_relay")
         val KEY_READ_RECEIPTS = booleanPreferencesKey("read_receipts")

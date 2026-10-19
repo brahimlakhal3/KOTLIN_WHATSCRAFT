@@ -98,3 +98,26 @@ val WhatscraftTypography = Typography(
         letterSpacing = 0.5.sp,
     ),
 )
+
+/** The same scale, stretched by the user's text-size choice. */
+fun typographyFor(scale: Float): Typography {
+    if (scale == 1f) return WhatscraftTypography
+    val base = WhatscraftTypography
+    return Typography(
+        displaySmall = base.displaySmall.stretched(scale),
+        headlineMedium = base.headlineMedium.stretched(scale),
+        headlineSmall = base.headlineSmall.stretched(scale),
+        titleLarge = base.titleLarge.stretched(scale),
+        titleMedium = base.titleMedium.stretched(scale),
+        titleSmall = base.titleSmall.stretched(scale),
+        bodyLarge = base.bodyLarge.stretched(scale),
+        bodyMedium = base.bodyMedium.stretched(scale),
+        bodySmall = base.bodySmall.stretched(scale),
+        labelLarge = base.labelLarge.stretched(scale),
+        labelMedium = base.labelMedium.stretched(scale),
+        labelSmall = base.labelSmall.stretched(scale),
+    )
+}
+
+private fun TextStyle.stretched(scale: Float): TextStyle =
+    copy(fontSize = fontSize * scale, lineHeight = lineHeight * scale)

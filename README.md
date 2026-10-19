@@ -240,11 +240,16 @@ run **before** the unit tests when the protocol changes.
    message is written normally and waits with a clock icon (and a small
    banner); it is encrypted and sent by itself the moment the relay is
    reachable again.
-4. In **Settings** you can change the display name, theme (system/light/dark),
-   **Colors** (Monochrome, WhatsApp, Ocean, Berry, Sunset), notifications,
-   relay address, delete all messages, sign out, or delete the account.
-   Monochrome dark is graphite gray by default; turn on **True black** for an
-   OLED canvas. WhatsApp is the familiar green‑and‑beige look with blue read
-   ticks; the three accent palettes recolour the bubbles, header, conversation
-   wallpaper and the background of every screen. The sign‑in and account pages
-   are single screens – nothing scrolls unless the keyboard is up.
+4. **Settings** is a small stack of pages, not one long list: a profile card at
+   the top, then **Encryption**, **Appearance**, **Chats**, **Notifications**,
+   **Privacy**, **Relay**, **Account** and **About**. Appearance holds the
+   theme (system/light/dark), **Colors** (Monochrome, WhatsApp, Ocean, Berry,
+   Sunset, Forest, Rose, Lavender, Sand, Midnight), text size (Small → Largest),
+   bubble shape (Rounded/Soft/Square), a live chat preview, **True black** and
+   **Reduce motion**. Monochrome dark is graphite gray by default; turn on
+   **True black** for an OLED canvas. WhatsApp is the familiar green‑and‑beige
+   look with blue read ticks; the accent palettes recolour the bubbles, header,
+   conversation wallpaper and the background of every screen. Chats holds
+   Enter‑to‑send, double‑tap‑to‑react and haptics; Privacy explains that there
+   is **no online status and no last seen** anywhere in the app. The sign‑in and
+   account pages are single screens – nothing scrolls unless the keyboard is up.
