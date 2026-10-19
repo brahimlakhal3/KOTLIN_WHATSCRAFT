@@ -486,9 +486,10 @@ class ChatRepository(
     fun setActiveConversation(conversationId: String?) {
         _activeConversation.value = conversationId
         if (conversationId != null) {
-            // Every entry lands on the newest message alone; the rest of the
-            // history waits behind "Load earlier messages". Re-opening a chat
-            // never pays for what the previous visit pulled.
+            // Every entry opens on the newest messages (INITIAL_WINDOW of
+            // them) with the list at the bottom; re-opening never pays for
+            // what a previous visit pulled - older pages are re-loaded with
+            // the button, 30 at a time.
             windowSizes.update { it + (conversationId to INITIAL_WINDOW) }
             scope.launch { markConversationRead(conversationId) }
         }
@@ -602,15 +603,16 @@ class ChatRepository(
     }
 
     /**
-     * A bubble just landed in the open conversation: let the window grow with
-     * it (up to [LIVE_WINDOW_MAX]) so reading stays continuous - arriving
-     * messages never push what is already on screen into hiding.
+     * A bubble just landed in the open conversation. The window normally
+     * already holds [INITIAL_WINDOW] messages, so this only matters right
+     * after a clear, when fewer rows are on screen: new bubbles grow the
+     * window with them instead of hiding older ones without a button.
      */
     private fun noteArrival(conversationId: String) {
         if (_activeConversation.value != conversationId) return
         windowSizes.update { windows ->
             val shown = windows[conversationId] ?: INITIAL_WINDOW
-            if (shown >= LIVE_WINDOW_MAX) windows else windows + (conversationId to (shown + 1))
+            if (shown >= INITIAL_WINDOW) windows else windows + (conversationId to (shown + 1))
         }
     }
 
@@ -1297,16 +1299,12 @@ class ChatRepository(
         const val HISTORY_PAGE = 40
 
         /**
-         * A conversation always opens on its newest message alone: everything
-         * older waits behind "Load earlier messages", so entering a chat is
-         * instant no matter how long the history is. Each tap reveals up to
-         * [WINDOW_STEP] more.
+         * Messages shown when a conversation is opened - always the newest
+         * ones, with the view at the bottom - and per "load earlier" tap:
+         * 30, then 60, then 90...
          */
-        const val INITIAL_WINDOW = 1
+        const val INITIAL_WINDOW = 30
         const val WINDOW_STEP = 30
-
-        /** While a chat is open, arriving bubbles grow the window up to this. */
-        const val LIVE_WINDOW_MAX = 30
 
         /** Pages [ChatRepository.syncNewer] may pull in one catch-up. */
         const val MAX_CATCHUP_PAGES = 25

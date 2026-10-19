@@ -230,13 +230,13 @@ run **before** the unit tests when the protocol changes.
    message to send ❤️ (double‑tap again to take it back) or **long‑press** for
    the emoji picker and copy. The header **⋮** menu has the safety number,
    mute/unmute, clear‑messages, and remove‑connection (mutual on both phones).
-   Every conversation opens instantly on its **newest message only** – with a
-   short loading state the first time – and older messages wait behind
-   **Load earlier messages** at the top, which reveals 30 more per tap. Entry
-   cost never depends on how long the history is. Decryption stays off the
-   main thread with an LRU plaintext cache so typing never fights the crypto,
-   and anything the relay collected while the phone was away is pulled in
-   quietly after the screen is already up. With no connection, a
+   Every conversation opens with a short loading state, then the newest **30**
+   messages with the view at the bottom – the same every time, no matter how
+   long the history is. **Load earlier messages** at the top adds 30 more per
+   tap (30 → 60 → 90 …) without the list jumping around. Decryption stays off
+   the main thread with an LRU plaintext cache so typing never fights the
+   crypto, and anything the relay collected while the phone was away is pulled
+   in quietly after the screen is already up. With no connection, a
    message is written normally and waits with a clock icon (and a small
    banner); it is encrypted and sent by itself the moment the relay is
    reachable again.

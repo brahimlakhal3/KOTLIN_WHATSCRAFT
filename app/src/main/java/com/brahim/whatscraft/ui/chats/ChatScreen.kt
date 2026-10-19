@@ -156,6 +156,13 @@ fun ChatScreen(
     var atStart by remember(conversationId) { mutableStateOf(false) }
     var loadingHistory by remember(conversationId) { mutableStateOf(true) }
 
+    // Scroll anchor: the bubble at the top of the viewport when "load earlier"
+    // is tapped. Older messages slide in above it; the list is put back so the
+    // view does not jump.
+    var anchorKey by remember(conversationId) { mutableStateOf<String?>(null) }
+    var anchorOffset by remember(conversationId) { mutableIntStateOf(0) }
+    var anchorArmed by remember(conversationId) { mutableStateOf(false) }
+
     // The first paint of a conversation lands on the newest message without
     // animating through the whole history.
     var landing by remember(conversationId) { mutableStateOf(true) }
@@ -180,10 +187,15 @@ fun ChatScreen(
 
     LaunchedEffect(conversationId) {
         repository.setActiveConversation(conversationId)
+        val startedAt = System.currentTimeMillis()
         try {
             val more = runCatching { repository.ensureHistory(conversationId) }.getOrDefault(true)
             atStart = !more
         } finally {
+            // A short, deliberate entrance: the spinner stays for about a
+            // second even when everything is already on the phone.
+            val spent = System.currentTimeMillis() - startedAt
+            if (spent < ENTRY_LOADING_MS) delay(ENTRY_LOADING_MS - spent)
             loadingHistory = false
         }
         openedEmpty = messages.isEmpty()
@@ -203,10 +215,11 @@ fun ChatScreen(
     }
 
     // New messages settle at the bottom when the user is already there. The
-    // first time a conversation opens we jump there instantly instead of
+    // first paint after the spinner leaves jumps there instantly instead of
     // animating through every message.
     val lastId = messages.lastOrNull()?.id
-    LaunchedEffect(lastId) {
+    LaunchedEffect(lastId, loadingHistory) {
+        if (loadingHistory) return@LaunchedEffect
         val newest = messages.lastOrNull() ?: return@LaunchedEffect
         val bottom = lastScrollIndex(thread.size, atStart)
         if (landing) {
@@ -236,13 +249,40 @@ fun ChatScreen(
     fun loadMore() {
         if (loadingMore) return
         loadingMore = true
+        // Remember the bubble at the top of the viewport: when the older page
+        // slides in above it, that bubble must stay exactly where it is.
+        listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { item ->
+                val key = item.key
+                key is String && key != LOAD_MORE_KEY && !key.startsWith(DAY_KEY_PREFIX)
+            }
+            ?.let { first ->
+                anchorKey = first.key as String
+                anchorOffset = first.offset - listState.layoutInfo.viewportStartOffset
+                anchorArmed = true
+            }
         scope.launch {
             val more = runCatching { repository.loadMore(conversationId) }.getOrDefault(false)
             if (!more) atStart = true
             loadingMore = false
-            // Older messages appear above the current view: glide up so the
-            // freshly revealed ones are on screen instead of off-screen.
-            runCatching { listState.animateScrollToItem(if (atStart) 0 else 1) }
+            // Nothing changed (no older page): drop the anchor so a later
+            // message cannot trigger a stale restore.
+            delay(ANCHOR_GRACE_MS)
+            anchorArmed = false
+        }
+    }
+
+    // Older messages have just been inserted above the viewport: put the
+    // anchored bubble back where it was, so the list never jerks around.
+    LaunchedEffect(thread) {
+        if (!anchorArmed) return@LaunchedEffect
+        anchorArmed = false
+        val key = anchorKey ?: return@LaunchedEffect
+        anchorKey = null
+        val at = thread.indexOfFirst { it.key == key }
+        if (at < 0) return@LaunchedEffect
+        runCatching {
+            listState.scrollToItem(at + if (atStart) 0 else 1, anchorOffset)
         }
     }
 
@@ -423,18 +463,21 @@ fun ChatScreen(
             }
 
             Box(Modifier.weight(1f).background(WhatscraftColors.threadBackground)) {
-                if (thread.isNotEmpty()) {
-                    LazyColumn(
+                when {
+                    // Opening a chat shows a brief spinner before its page of
+                    // history lands (see ENTRY_LOADING_MS).
+                    loadingHistory -> LoadingThread()
+                    thread.isNotEmpty() -> LazyColumn(
                         state = listState,
                         // Short threads rest on the bottom like every chat app:
-                        // a conversation that opens on its newest message alone
-                        // should not float at the top of an empty screen.
+                        // a handful of messages should not float at the top of
+                        // an empty screen.
                         verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         if (!atStart) {
-                            item(key = "load-more", contentType = "loadMore") {
+                            item(key = LOAD_MORE_KEY, contentType = "loadMore") {
                                 LoadMoreRow(loading = loadingMore, onClick = ::loadMore)
                             }
                         }
@@ -460,10 +503,7 @@ fun ChatScreen(
                             }
                         }
                     }
-                } else if (loadingHistory) {
-                    LoadingThread()
-                } else {
-                    EmptyThread()
+                    else -> EmptyThread()
                 }
             }
 
@@ -556,7 +596,7 @@ private fun buildThread(messages: List<ChatMessage>): List<ThreadItem> =
         messages.forEachIndexed { index, message ->
             val previous = messages.getOrNull(index - 1)
             if (previous == null || TimeFormat.daysBetween(message.createdAt, previous.createdAt) != 0L) {
-                add(ThreadItem.Day("day-${message.id}", TimeFormat.dayHeader(message.createdAt)))
+                add(ThreadItem.Day("$DAY_KEY_PREFIX${message.id}", TimeFormat.dayHeader(message.createdAt)))
             }
             add(ThreadItem.Bubble(message, TimeFormat.clock(message.createdAt)))
         }
@@ -1117,3 +1157,13 @@ private fun SafetyNumberDialog(
 }
 
 private const val TYPING_LAPSE_MS = 1_800L
+
+/** How long the loading spinner stays when a conversation is opened. */
+private const val ENTRY_LOADING_MS = 1_000L
+
+/** Grace period before an unconsumed scroll anchor is dropped. */
+private const val ANCHOR_GRACE_MS = 400L
+
+/** LazyColumn keys shared with the scroll-anchor logic. */
+private const val LOAD_MORE_KEY = "load-more"
+private const val DAY_KEY_PREFIX = "day-"
