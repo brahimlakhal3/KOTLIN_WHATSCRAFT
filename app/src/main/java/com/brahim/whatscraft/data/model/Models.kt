@@ -149,6 +149,8 @@ data class ConversationDto(
     val createdBy: String? = null,
     val createdAt: String,
     val lastReadSeq: Long = 0,
+    /** How far the other member has shared their read receipts. */
+    val peerLastReadSeq: Long = 0,
     val unread: Int = 0,
     val muted: Boolean = false,
     val members: List<UserDto> = emptyList(),
@@ -202,7 +204,7 @@ data class SendMessageResponse(val message: MessageDto, val duplicate: Boolean =
 data class OpenConversationRequest(val peerId: String)
 
 @Serializable
-data class ReadRequest(val seq: Long)
+data class ReadRequest(val seq: Long, val receipt: Boolean = true)
 
 @Serializable
 data class MuteRequest(val muted: Boolean)

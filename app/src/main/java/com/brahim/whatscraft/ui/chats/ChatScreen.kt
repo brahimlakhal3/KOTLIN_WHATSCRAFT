@@ -61,6 +61,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -79,6 +80,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -91,12 +93,16 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -233,12 +239,22 @@ fun ChatScreen(
         }
     }
 
-    // Opening the keyboard means writing: the thread rises with it and stays
-    // parked on the newest message.
+    // Opening the keyboard keeps the newest messages in view only when the
+    // reader was already at the bottom. If they scrolled up to read older
+    // messages, the thread must stay where it is. The anchor ignores the
+    // viewport shrink itself and only changes on real scrolls (or while the
+    // keyboard is down), so hiding and reopening it does the right thing.
     val density = LocalDensity.current
     val imeOpen = WindowInsets.ime.getBottom(density) > 0
+    var anchoredToBottom by remember(conversationId) { mutableStateOf(true) }
+    LaunchedEffect(listState, imeOpen) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }
+            .collect { (scrolling, canForward) ->
+                if (!imeOpen || scrolling) anchoredToBottom = !canForward
+            }
+    }
     LaunchedEffect(imeOpen) {
-        if (!imeOpen || thread.isEmpty()) return@LaunchedEffect
+        if (!imeOpen || thread.isEmpty() || !anchoredToBottom) return@LaunchedEffect
         runCatching { listState.animateScrollToItem(lastScrollIndex(thread.size, atStart)) }
     }
 
@@ -500,9 +516,10 @@ fun ChatScreen(
                 onDraftChanged = ::onDraftChanged,
                 onSend = ::send,
                 onHeightChanged = {
-                    // Only when the composer genuinely grows (a new line), not
-                    // on every character.
-                    if (thread.isNotEmpty()) {
+                    // Only when the composer genuinely grows (a new line) and
+                    // the newest message is already on screen; typing should
+                    // never pull someone out of the history they are reading.
+                    if (thread.isNotEmpty() && anchoredToBottom) {
                         scope.launch { listState.scrollToItem(lastScrollIndex(thread.size, atStart)) }
                     }
                 },
@@ -584,6 +601,22 @@ private fun buildThread(messages: List<ChatMessage>): List<ThreadItem> =
 /** Index of the bottom of the list, accounting for the "load more" row. */
 private fun lastScrollIndex(threadSize: Int, atStart: Boolean): Int =
     (threadSize - if (atStart) 1 else 0).coerceAtLeast(0)
+
+/**
+ * True when the first strong character is right-to-left (Arabic, Hebrew, ...).
+ * A message that opens in Arabic lays out right-to-left; one that opens in
+ * French lays out left-to-right, even when it later quotes the other language.
+ */
+private fun isRtlText(text: String): Boolean {
+    for (char in text) {
+        when (Character.getDirectionality(char)) {
+            Character.DIRECTIONALITY_LEFT_TO_RIGHT -> return false
+            Character.DIRECTIONALITY_RIGHT_TO_LEFT,
+            Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC -> return true
+        }
+    }
+    return false
+}
 
 @Composable
 private fun LoadMoreRow(loading: Boolean, onClick: () -> Unit) {
@@ -676,6 +709,9 @@ private fun Composer(
                     placeholder = { Text("Message") },
                     shape = MaterialTheme.shapes.large,
                     maxLines = 5,
+                    // Let each line take the direction of what is being typed,
+                    // so Arabic and French mix naturally in the field too.
+                    textStyle = LocalTextStyle.current.copy(textDirection = TextDirection.Content),
                     keyboardOptions = KeyboardOptions(
                         imeAction = if (enterToSend) ImeAction.Default else ImeAction.Send,
                     ),
@@ -719,6 +755,15 @@ private fun MessageBubble(
     val haptics = LocalHapticFeedback.current
     val reduceMotion = LocalReduceMotion.current
     var menuOpen by remember(message.id) { mutableStateOf(false) }
+    val rtl = remember(message.text) { isRtlText(message.text) }
+    // Bottom-left for Arabic, bottom-right for French. Start/End would flip
+    // with an Arabic system locale, away from the paragraph's real end.
+    val layoutDirection = LocalLayoutDirection.current
+    val metaAlignment = if (rtl == (layoutDirection == LayoutDirection.Ltr)) {
+        Alignment.BottomStart
+    } else {
+        Alignment.BottomEnd
+    }
 
     fun tick() {
         if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -817,18 +862,23 @@ private fun MessageBubble(
                         Text(
                             text = annotated,
                             inlineContent = metaInline,
-                            style = MaterialTheme.typography.bodyLarge,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                // The trailing clock slot follows the message's
+                                // own direction, not the phone's layout.
+                                textDirection = if (rtl) TextDirection.Rtl else TextDirection.Ltr,
+                            ),
                             color = if (message.mine) {
                                 WhatscraftColors.onBubbleOutgoing
                             } else {
                                 MaterialTheme.colorScheme.onSurface
                             },
+                            textAlign = if (rtl) TextAlign.Right else TextAlign.Left,
                         )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier
-                                .align(Alignment.BottomEnd)
+                                .align(metaAlignment)
                                 .padding(bottom = 1.dp),
                         ) {
                             Text(

@@ -41,7 +41,6 @@ import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,7 +63,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -367,15 +365,9 @@ private fun SettingsHome(
             SettingsGroup("Looks") {
                 NavRow(
                     icon = Icons.Rounded.Palette,
-                    title = "Theme & colors",
-                    subtitle = "${paletteLabel(settings.palette)} · ${themeLabel(settings.themeMode)}",
-                    onClick = { onOpen(SettingsPage.Appearance) },
-                )
-                RowDivider()
-                NavRow(
-                    icon = Icons.Rounded.TextFields,
-                    title = "Chat style",
-                    subtitle = "${settings.textSize.label} text · ${settings.bubbleStyle.label} bubbles",
+                    title = "Appearance",
+                    subtitle = "${paletteLabel(settings.palette)} · ${themeLabel(settings.themeMode)} · " +
+                        "${settings.textSize.label} text",
                     onClick = { onOpen(SettingsPage.Appearance) },
                 )
             }
@@ -446,17 +438,11 @@ private fun SettingsHome(
 @Composable
 private fun ProfileCard(user: Session?, onClick: () -> Unit) {
     val shape = MaterialTheme.shapes.large
-    val brush = Brush.linearGradient(
-        listOf(
-            MaterialTheme.colorScheme.primaryContainer,
-            MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-    )
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(brush)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable(onClick = onClick)
             .padding(18.dp),
     ) {

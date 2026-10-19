@@ -374,6 +374,11 @@ class ChatRepository(
             val keptTyping = state.typing.filterKeys { merged.containsKey(it) }
             state.copy(dtos = merged, typing = keptTyping)
         }
+        // A refresh can carry a newer peer receipt watermark (for example after
+        // the phone was offline), so repaint ticks that were already loaded.
+        conversationState.value.dtos.values.forEach { dto ->
+            applyPeerRead(dto.id, dto.peerLastReadSeq)
+        }
     }
 
     suspend fun openConversation(peerId: String): String {
@@ -406,10 +411,11 @@ class ChatRepository(
         notifier.cancelForConversation(conversationId)
         if (alreadyRead) return
 
-        if (settings.current.readReceipts) {
-            socket.sendRead(conversationId, newest)
-            runCatching { api.markRead(conversationId, newest) }
-        }
+        val shareReceipt = settings.current.readReceipts
+        if (shareReceipt) socket.sendRead(conversationId, newest)
+        // Always advance the server watermark: unread counts depend on it even
+        // when this person does not share read receipts with the other side.
+        runCatching { api.markRead(conversationId, newest, receipt = shareReceipt) }
     }
 
     fun setActiveConversation(conversationId: String?) {
@@ -693,9 +699,10 @@ class ChatRepository(
     private fun confirmSent(conversationId: String, messageId: String, seq: Long, createdAt: String) {
         val existing = findMessage(messageId) ?: return
         val whenSent = IsoTime.parse(createdAt).takeIf { it > 0 } ?: existing.createdAt
+        val peerRead = conversationState.value.dtos[conversationId]?.peerLastReadSeq ?: 0L
         val confirmed = existing.copy(
             seq = seq,
-            status = MessageStatus.Sent,
+            status = if (seq in 1..peerRead) MessageStatus.Read else MessageStatus.Sent,
             createdAt = whenSent,
         )
         updateMessage(messageId) { confirmed }
@@ -788,18 +795,16 @@ class ChatRepository(
             is ServerFrame.Read -> {
                 val me = sessions.current?.userId
                 if (frame.userId != me) {
-                    messageState.update { state ->
-                        val rows = state[frame.conversationId] ?: return@update state
-                        state + (
-                            frame.conversationId to rows.map { row ->
-                                if (row.mine && row.seq in 1..frame.seq) {
-                                    row.copy(status = MessageStatus.Read)
-                                } else {
-                                    row
-                                }
-                            }
-                            )
+                    conversationState.update { state ->
+                        val dto = state.dtos[frame.conversationId] ?: return@update state
+                        if (dto.peerLastReadSeq >= frame.seq) return@update state
+                        state.copy(
+                            dtos = state.dtos + (
+                                frame.conversationId to dto.copy(peerLastReadSeq = frame.seq)
+                                ),
+                        )
                     }
+                    applyPeerRead(frame.conversationId, frame.seq)
                 }
             }
 
@@ -1026,10 +1031,44 @@ class ChatRepository(
         conversationState.update { state ->
             state.copy(dtos = state.dtos + (dto.id to dto))
         }
+        applyPeerRead(dto.id, dto.peerLastReadSeq)
     }
 
     private fun putMessages(conversationId: String, rows: List<ChatMessage>) {
-        messageState.update { it + (conversationId to sortMessages(rows)) }
+        // History rows arrive as "sent"; the peer's receipt watermark tells us
+        // which of them were already read before this phone was opened.
+        val peerRead = conversationState.value.dtos[conversationId]?.peerLastReadSeq ?: 0L
+        val adjusted = if (peerRead > 0) {
+            rows.map { row ->
+                if (row.mine && row.status == MessageStatus.Sent && row.seq in 1..peerRead) {
+                    row.copy(status = MessageStatus.Read)
+                } else {
+                    row
+                }
+            }
+        } else {
+            rows
+        }
+        messageState.update { it + (conversationId to sortMessages(adjusted)) }
+    }
+
+    /**
+     * Upgrades my sent bubbles to "read" once the other person has shared a
+     * receipt watermark. Pending, queued and failed bubbles are untouched.
+     */
+    private fun applyPeerRead(conversationId: String, peerReadSeq: Long) {
+        if (peerReadSeq <= 0) return
+        messageState.update { state ->
+            val rows = state[conversationId] ?: return@update state
+            val updated = rows.map { row ->
+                if (row.mine && row.status == MessageStatus.Sent && row.seq in 1..peerReadSeq) {
+                    row.copy(status = MessageStatus.Read)
+                } else {
+                    row
+                }
+            }
+            if (updated == rows) state else state + (conversationId to updated)
+        }
     }
 
     private fun addMessage(message: ChatMessage) {

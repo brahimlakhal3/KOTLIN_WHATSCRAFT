@@ -199,11 +199,11 @@ class ApiClient(
             authenticated = true,
         )
 
-    suspend fun markRead(conversationId: String, seq: Long) {
+    suspend fun markRead(conversationId: String, seq: Long, receipt: Boolean = true) {
         execute<Unit>(
             "POST",
             "/v1/conversations/$conversationId/read",
-            encode(ReadRequest.serializer(), ReadRequest(seq)),
+            encode(ReadRequest.serializer(), ReadRequest(seq, receipt)),
             authenticated = true,
         )
     }
