@@ -160,6 +160,11 @@ fun ChatScreen(
     // animating through the whole history.
     var landing by remember(conversationId) { mutableStateOf(true) }
 
+    // True when the chat had no messages at all when it opened: its first
+    // arrival gets the pop-in, while a chat that opened with history lands
+    // quietly (even though it now shows just its newest message).
+    var openedEmpty by remember(conversationId) { mutableStateOf(false) }
+
     // The bubble that just arrived: it gets a small pop-in, but only while the
     // chat is open. Old bubbles composed by scrolling stay still.
     var freshId by remember(conversationId) { mutableStateOf<String?>(null) }
@@ -181,6 +186,11 @@ fun ChatScreen(
         } finally {
             loadingHistory = false
         }
+        openedEmpty = messages.isEmpty()
+        // Whatever the relay collected while this phone was away (process
+        // killed, phone rebooted...) lands after the screen is already up:
+        // entering never waits on the network.
+        runCatching { repository.syncNewer(conversationId) }
         runCatching { repository.markConversationRead(conversationId) }
     }
 
@@ -204,7 +214,10 @@ fun ChatScreen(
             landing = false
             // A conversation that was empty until this message still gets the
             // pop-in; a loaded history keeps landing quietly.
-            if (messages.size == 1 && !loadingHistory) freshId = newest.id
+            if (openedEmpty) {
+                freshId = newest.id
+                openedEmpty = false
+            }
         } else {
             freshId = newest.id
             if (nearBottom || newest.mine) {
@@ -227,6 +240,9 @@ fun ChatScreen(
             val more = runCatching { repository.loadMore(conversationId) }.getOrDefault(false)
             if (!more) atStart = true
             loadingMore = false
+            // Older messages appear above the current view: glide up so the
+            // freshly revealed ones are on screen instead of off-screen.
+            runCatching { listState.animateScrollToItem(if (atStart) 0 else 1) }
         }
     }
 
@@ -410,7 +426,10 @@ fun ChatScreen(
                 if (thread.isNotEmpty()) {
                     LazyColumn(
                         state = listState,
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                        // Short threads rest on the bottom like every chat app:
+                        // a conversation that opens on its newest message alone
+                        // should not float at the top of an empty screen.
+                        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {

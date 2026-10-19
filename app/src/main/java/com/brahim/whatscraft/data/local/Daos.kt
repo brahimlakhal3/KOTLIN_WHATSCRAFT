@@ -122,6 +122,13 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId")
     suspend fun count(conversationId: String): Int
 
+    /**
+     * Bubbles only: reactions are sealed rows too, but they never occupy the
+     * visible window, so they must not inflate its arithmetic.
+     */
+    @Query("SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId AND kind != 'reaction'")
+    suspend fun countVisible(conversationId: String): Int
+
     @Query("UPDATE messages SET status = :status WHERE id = :id")
     suspend fun setStatus(id: String, status: String)
 

@@ -95,6 +95,9 @@ class ChatRepository(
     /** How many messages each conversation currently shows; grown by [loadMore]. */
     private val windowSizes = MutableStateFlow<Map<String, Int>>(emptyMap())
 
+    /** Conversations whose relay history was pulled to its end (no older pages). */
+    private val relayExhausted = MutableStateFlow<Set<String>>(emptySet())
+
     /**
      * Opening a sealed string is a Keystore round trip, so the recently opened
      * plaintexts are kept: a new message must not re-open the whole window.
@@ -343,6 +346,7 @@ class ChatRepository(
         contactsDao.clear()
         synchronized(plaintextCache) { plaintextCache.clear() }
         windowSizes.value = emptyMap()
+        relayExhausted.value = emptySet()
     }
 
     // -------------------------------------------------------------- profile --
@@ -481,57 +485,133 @@ class ChatRepository(
 
     fun setActiveConversation(conversationId: String?) {
         _activeConversation.value = conversationId
-        if (conversationId != null) scope.launch { markConversationRead(conversationId) }
+        if (conversationId != null) {
+            // Every entry lands on the newest message alone; the rest of the
+            // history waits behind "Load earlier messages". Re-opening a chat
+            // never pays for what the previous visit pulled.
+            windowSizes.update { it + (conversationId to INITIAL_WINDOW) }
+            scope.launch { markConversationRead(conversationId) }
+        }
     }
 
     /**
-     * Fetches the newest page when this conversation has never been opened.
-     * Returns true when older history may still exist on the relay.
+     * Seeds a conversation that has never been opened on this phone (or came
+     * back from a reinstall) with its newest page. Returns true while older
+     * messages are still reachable - hidden locally or waiting on the relay.
      */
     suspend fun ensureHistory(conversationId: String): Boolean {
-        if (messagesDao.newest(conversationId, 1).isNotEmpty()) return true
-        val page = api.messages(conversationId, before = null, limit = HISTORY_PAGE)
-        if (page.messages.isEmpty()) return false
-        // Everything in this page was cleared on this phone: there is no older
-        // history to show either, because older messages have smaller seq.
-        if (page.messages.none { it.seq > clearedUpTo(conversationId) }) return false
-        store(page.messages, conversationId)
-        return page.hasMore
+        if (messagesDao.newest(conversationId, 1).isEmpty()) {
+            val page = api.messages(conversationId, before = null, limit = HISTORY_PAGE)
+            val usable = page.messages.filter { it.seq > clearedUpTo(conversationId) }
+            if (usable.isEmpty()) {
+                // Empty, or everything the relay holds was cleared on this
+                // phone: older messages are cleared too (seq only decreases).
+                markRelayEnd(conversationId, exhausted = true)
+            } else {
+                store(usable, conversationId)
+                markRelayEnd(conversationId, exhausted = !page.hasMore)
+            }
+        }
+        return olderReachable(conversationId)
     }
 
-    /** Pulls one older page from the relay. False at the start of the chat. */
-    private suspend fun loadOlder(conversationId: String): Boolean {
+    /**
+     * Pulls what arrived while this phone was away (socket down, app killed,
+     * phone rebooted) so the newest bubble really is the newest. Cheap: a
+     * local check first, then a walk backwards from the relay's newest page
+     * until it meets rows already stored. Runs after the chat is on screen,
+     * so entering never waits for it.
+     */
+    suspend fun syncNewer(conversationId: String) {
+        val localNewest = messagesDao.newestSeq(conversationId) ?: return
+        if (localNewest <= 0) return
+        // The conversation preview tracks the newest seq the relay holds.
+        val serverNewest = conversationsDao.byId(conversationId)?.lastMessageSeq ?: 0L
+        if (serverNewest <= localNewest) return
+
+        var before: Long? = null
+        var pages = 0
+        while (pages++ < MAX_CATCHUP_PAGES) {
+            val page = api.messages(conversationId, before = before, limit = HISTORY_PAGE)
+            if (page.messages.isEmpty()) return
+            val oldest = page.messages.minOf { it.seq }
+            store(page.messages, conversationId)
+            // The page overlaps what we already had: the gap is closed.
+            if (oldest <= localNewest || !page.hasMore) return
+            before = oldest
+        }
+    }
+
+    /** Pulls one older page from the relay; records when the start is reached. */
+    private suspend fun loadOlder(conversationId: String) {
         val before = messagesDao.oldestSeq(conversationId)?.takeIf { it > 0 }
         val page = api.messages(conversationId, before = before, limit = HISTORY_PAGE)
-        if (page.messages.isEmpty()) return false
-        if (page.messages.none { it.seq > clearedUpTo(conversationId) }) return false
-        store(page.messages, conversationId)
-        return page.hasMore
+        val usable = page.messages.filter { it.seq > clearedUpTo(conversationId) }
+        if (usable.isEmpty()) {
+            markRelayEnd(conversationId, exhausted = true)
+            return
+        }
+        store(usable, conversationId)
+        markRelayEnd(conversationId, exhausted = !page.hasMore)
     }
 
     /**
      * Grows the visible slice by [WINDOW_STEP]: first from the local database
-     * (instant), then by pulling an older page from the relay. Returns false
-     * when there is nothing older to show.
+     * (instant), then by pulling an older page from the relay. Returns true
+     * while older messages remain reachable.
      */
     suspend fun loadMore(conversationId: String): Boolean {
-        val total = messagesDao.count(conversationId)
-        val shown = windowSizes.value[conversationId] ?: INITIAL_WINDOW
+        var shown = windowSizes.value[conversationId] ?: INITIAL_WINDOW
+        val total = messagesDao.countVisible(conversationId)
 
         // The local history shrank (chat cleared): resync the window first.
         if (total < shown) {
-            windowSizes.update { it + (conversationId to total.coerceAtLeast(1)) }
+            shown = total.coerceAtLeast(1)
+            windowSizes.update { it + (conversationId to shown) }
         }
 
         if (shown < total) {
             windowSizes.update { it + (conversationId to (shown + WINDOW_STEP).coerceAtMost(total)) }
-            return true
+            return olderReachable(conversationId)
         }
 
-        if (!loadOlder(conversationId)) return false
-        val grown = messagesDao.count(conversationId)
-        windowSizes.update { it + (conversationId to (shown + WINDOW_STEP).coerceAtMost(grown)) }
-        return true
+        val before = total
+        loadOlder(conversationId)
+        val grown = messagesDao.countVisible(conversationId)
+        if (grown > before) {
+            // Reveal the page that just landed; anything deeper stays hidden.
+            windowSizes.update { it + (conversationId to (shown + WINDOW_STEP).coerceAtMost(grown)) }
+        }
+        return olderReachable(conversationId)
+    }
+
+    /**
+     * True while anything older than the visible window is reachable: rows
+     * still hidden locally, or a relay page not pulled yet.
+     */
+    private suspend fun olderReachable(conversationId: String): Boolean {
+        val shown = windowSizes.value[conversationId] ?: INITIAL_WINDOW
+        if (messagesDao.countVisible(conversationId) > shown) return true
+        return conversationId !in relayExhausted.value
+    }
+
+    private fun markRelayEnd(conversationId: String, exhausted: Boolean) {
+        relayExhausted.update { ids ->
+            if (exhausted) ids + conversationId else ids - conversationId
+        }
+    }
+
+    /**
+     * A bubble just landed in the open conversation: let the window grow with
+     * it (up to [LIVE_WINDOW_MAX]) so reading stays continuous - arriving
+     * messages never push what is already on screen into hiding.
+     */
+    private fun noteArrival(conversationId: String) {
+        if (_activeConversation.value != conversationId) return
+        windowSizes.update { windows ->
+            val shown = windows[conversationId] ?: INITIAL_WINDOW
+            if (shown >= LIVE_WINDOW_MAX) windows else windows + (conversationId to (shown + 1))
+        }
     }
 
     private suspend fun store(dtos: List<MessageDto>, conversationId: String) {
@@ -560,6 +640,8 @@ class ChatRepository(
         messagesDao.clearConversation(conversationId)
         conversationsDao.clearLastMessage(conversationId)
         windowSizes.update { it + (conversationId to INITIAL_WINDOW) }
+        // Nothing older is reachable through the watermark anymore.
+        markRelayEnd(conversationId, exhausted = true)
         notifier.cancelForConversation(conversationId)
     }
 
@@ -572,6 +654,7 @@ class ChatRepository(
         conversationsDao.delete(conversationId)
         directories.remove(conversationId)
         windowSizes.update { it - conversationId }
+        relayExhausted.update { it - conversationId }
         notifier.cancelForConversation(conversationId)
         synchronized(plaintextCache) { plaintextCache.clear() }
     }
@@ -589,6 +672,7 @@ class ChatRepository(
         conversationsDao.clearAllLastMessages()
         synchronized(plaintextCache) { plaintextCache.clear() }
         windowSizes.value = emptyMap()
+        relayExhausted.value = emptySet()
         conversations.forEach { notifier.cancelForConversation(it.id) }
     }
 
@@ -630,6 +714,7 @@ class ChatRepository(
             seq = 0,
         )
 
+        noteArrival(conversationId)
         transmit(conversationId, messageId, body)
     }
 
@@ -940,6 +1025,9 @@ class ChatRepository(
         // only repaints the bubble it belongs to.
         if (entity.kind == KIND_REACTION) return
 
+        // A freshly delivered bubble belongs on screen while the chat is open.
+        if (!seen) noteArrival(conversationId)
+
         val mine = dto.senderId == me.userId
         conversationsDao.setLastMessage(
             id = conversationId,
@@ -1208,9 +1296,20 @@ class ChatRepository(
         const val TYPING_TTL_MS = 5_000L
         const val HISTORY_PAGE = 40
 
-        /** Messages shown when a conversation is opened, and per "load more" tap. */
-        const val INITIAL_WINDOW = 30
+        /**
+         * A conversation always opens on its newest message alone: everything
+         * older waits behind "Load earlier messages", so entering a chat is
+         * instant no matter how long the history is. Each tap reveals up to
+         * [WINDOW_STEP] more.
+         */
+        const val INITIAL_WINDOW = 1
         const val WINDOW_STEP = 30
+
+        /** While a chat is open, arriving bubbles grow the window up to this. */
+        const val LIVE_WINDOW_MAX = 30
+
+        /** Pages [ChatRepository.syncNewer] may pull in one catch-up. */
+        const val MAX_CATCHUP_PAGES = 25
         const val PLAINTEXT_CACHE_MAX = 256
 
         /** How long a socket send waits for the relay's ack before queuing. */
