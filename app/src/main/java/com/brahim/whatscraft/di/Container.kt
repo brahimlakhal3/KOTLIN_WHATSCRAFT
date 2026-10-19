@@ -1,0 +1,107 @@
+package com.brahim.whatscraft.di
+
+import android.content.Context
+import com.brahim.whatscraft.crypto.IdentityStore
+import com.brahim.whatscraft.crypto.SecretVault
+import com.brahim.whatscraft.data.ApiClient
+import com.brahim.whatscraft.data.AuthProvider
+import com.brahim.whatscraft.data.ChatRepository
+import com.brahim.whatscraft.data.SessionManager
+import com.brahim.whatscraft.data.SessionStore
+import com.brahim.whatscraft.data.SettingsStore
+import com.brahim.whatscraft.data.SocketClient
+import com.brahim.whatscraft.data.local.AppDatabase
+import com.brahim.whatscraft.notify.Notifier
+import com.brahim.whatscraft.notify.RelayService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
+
+/**
+ * Manual dependency injection: one object graph, built once by the Application.
+ *
+ * No annotation processor and no reflection - everything is readable top to
+ * bottom, and the singletons are simply the properties below.
+ */
+class Container(context: Context) {
+
+    private val appContext: Context = context.applicationContext
+
+    /** Process-wide scope for work that outlives any screen. */
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val vault = SecretVault(appContext)
+    val identityStore = IdentityStore(vault)
+    val settings = SettingsStore(appContext)
+    val sessions = SessionStore(appContext, vault)
+    val notifier = Notifier(appContext)
+    val database: AppDatabase = AppDatabase.build(appContext)
+
+    private val http: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        // Keeps the WebSocket warm through carrier NAT timeouts.
+        .pingInterval(25, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    val socket = SocketClient(http)
+
+    val api: ApiClient = ApiClient(http, auth = object : AuthProvider {
+        private val manager by lazy { SessionManager(api, sessions) }
+
+        override suspend fun accessToken(): String? = manager.accessToken()
+
+        override suspend fun refresh(): Boolean = manager.refresh()
+    })
+
+    val repository: ChatRepository = ChatRepository(
+        api = api,
+        socket = socket,
+        database = database,
+        identityStore = identityStore,
+        vault = vault,
+        sessions = sessions,
+        settings = settings,
+        notifier = notifier,
+        scope = scope,
+    )
+
+    val isSignedIn: Boolean get() = sessions.isSignedIn
+
+    /**
+     * Brings the app online: opens the websocket, syncs, and (when the user
+     * asked for it) starts the foreground service that keeps messages arriving
+     * with the app closed.
+     */
+    fun start() {
+        if (!sessions.isSignedIn) return
+        repository.start()
+        if (settings.current.backgroundRelay) RelayService.start(appContext)
+    }
+
+    /** Called after a successful sign-in so everything starts in the right order. */
+    fun onSignedIn() {
+        scope.launch {
+            repository.publishDevice()
+            repository.refreshAll()
+        }
+        repository.start()
+        if (settings.current.backgroundRelay) RelayService.start(appContext)
+    }
+
+    fun onSignedOut() {
+        RelayService.stop(appContext)
+        notifier.cancelAll()
+    }
+
+    /** Mirrors the "keep it connected in the background" preference. */
+    fun applyBackgroundPreference(enabled: Boolean) {
+        if (enabled && sessions.isSignedIn) RelayService.start(appContext) else RelayService.stop(appContext)
+    }
+}

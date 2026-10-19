@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only.
+
+  While developing you will point the app at a relay running on your laptop
+  (http://192.168.x.x:8080 or http://10.0.2.2:8080), so cleartext is allowed
+  everywhere here. Release builds keep the strict policy in
+  src/main/res/xml/network_security_config.xml: TLS only, with cleartext limited
+  to loopback for local testing.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">Whatscraft</string>
+
+    <!-- Notification channels -->
+    <string name="channel_messages_name">Messages</string>
+    <string name="channel_messages_description">New messages from your connections</string>
+    <string name="channel_relay_name">Connection</string>
+    <string name="channel_relay_description">Keeps WhatsCraft reachable for new messages</string>
+
+    <string name="relay_notification_title">Whatscraft is listening</string>
+    <string name="relay_notification_text">Messages arrive instantly</string>
+    <string name="notification_action_reply">Reply</string>
+    <string name="notification_action_mark_read">Mark as read</string>
+    <string name="notification_reply_hint">Message</string>
+    <string name="notification_you">You</string>
+    <string name="notification_hidden_message">New message</string>
+
+    <string name="friend_notification_request_title">New connection request</string>
+    <string name="friend_notification_request_text">%1$s would like to connect</string>
+    <string name="friend_notification_accepted_title">Request accepted</string>
+    <string name="friend_notification_accepted_text">You and %1$s are now connected</string>
+</resources>

@@ -1,0 +1,22 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Base theme. Everything visible is drawn by Compose; this only removes
+         the action bar and paints the window so there is no flash on launch. -->
+    <style name="Theme.Whatscraft" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+    </style>
+
+    <!-- Cold-start splash: the monochrome mark on a plain background. -->
+    <style name="Theme.Whatscraft.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="windowSplashScreenAnimationDuration">280</item>
+        <item name="postSplashScreenTheme">@style/Theme.Whatscraft</item>
+    </style>
+
+</resources>

@@ -1,0 +1,31 @@
+# Android / Gradle
+*.iml
+.gradle/
+.kotlin/
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+.DS_Store
+
+# IDE
+.idea/
+*.hprof
+hs_err_pid*.log
+core.*
+
+# Signing material must never be committed. The keystore and its passwords
+# live outside the repo (see gradle.properties for the expected properties).
+*.jks
+*.keystore
+*.p12
+keystore.properties
+*.pepk
+
+# The relay is its own repository: https://github.com/brahimlakhal3/whatscraft-server
+/server/
+
+# Local tooling
+/tools/

@@ -1,0 +1,7 @@
+<resources>
+    <color name="ink">#FFF7F7F7</color>
+    <color name="paper">#FF171717</color>
+    <color name="window_background">#FF171717</color>
+    <color name="splash_background">#FF171717</color>
+    <color name="notification_accent">#FFFFFFFF</color>
+</resources>

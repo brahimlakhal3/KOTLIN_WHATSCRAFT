@@ -1,0 +1,8 @@
+<resources>
+    <!-- Whatscraft is strictly monochrome: no hue, only light and shadow. -->
+    <color name="ink">#FF0B0B0B</color>
+    <color name="paper">#FFFFFFFF</color>
+    <color name="window_background">#FFFFFFFF</color>
+    <color name="splash_background">#FFFFFFFF</color>
+    <color name="notification_accent">#FF0B0B0B</color>
+</resources>
