@@ -1,6 +1,7 @@
 package com.brahim.whatscraft.ui.chats
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
@@ -156,15 +157,9 @@ fun ChatScreen(
     var atStart by remember(conversationId) { mutableStateOf(false) }
     var loadingHistory by remember(conversationId) { mutableStateOf(true) }
 
-    // Scroll anchor: the bubble at the top of the viewport when "load earlier"
-    // is tapped. Older messages slide in above it; the list is put back so the
-    // view does not jump.
-    var anchorKey by remember(conversationId) { mutableStateOf<String?>(null) }
-    var anchorOffset by remember(conversationId) { mutableIntStateOf(0) }
-    var anchorArmed by remember(conversationId) { mutableStateOf(false) }
-
     // The first paint of a conversation lands on the newest message without
-    // animating through the whole history.
+    // animating through the whole history. It happens behind the entrance
+    // spinner, so the very first frame the user sees is already at the foot.
     var landing by remember(conversationId) { mutableStateOf(true) }
 
     // True when the chat had no messages at all when it opened: its first
@@ -196,6 +191,12 @@ fun ChatScreen(
             // second even when everything is already on the phone.
             val spent = System.currentTimeMillis() - startedAt
             if (spent < ENTRY_LOADING_MS) delay(ENTRY_LOADING_MS - spent)
+            // Give the collected list a beat to pick up what was just stored,
+            // so the spinner hands over to messages, never to a blank frame.
+            repeat(20) {
+                if (messages.isNotEmpty()) return@repeat
+                delay(10)
+            }
             loadingHistory = false
         }
         openedEmpty = messages.isEmpty()
@@ -216,10 +217,10 @@ fun ChatScreen(
 
     // New messages settle at the bottom when the user is already there. The
     // first paint after the spinner leaves jumps there instantly instead of
-    // animating through every message.
+    // animating through every message - and it happens while the spinner still
+    // covers the list, so the hand-over shows a thread already at its foot.
     val lastId = messages.lastOrNull()?.id
-    LaunchedEffect(lastId, loadingHistory) {
-        if (loadingHistory) return@LaunchedEffect
+    LaunchedEffect(lastId) {
         val newest = messages.lastOrNull() ?: return@LaunchedEffect
         val bottom = lastScrollIndex(thread.size, atStart)
         if (landing) {
@@ -246,43 +247,20 @@ fun ChatScreen(
         if (freshId == id) freshId = null
     }
 
+    // "Load earlier" keeps its spinner up for a beat so the tap visibly does
+    // something, then the older block fades in just below the row. The view
+    // itself is never yanked anywhere: whoever taps the row is at the top of
+    // the list, and the new page simply fills in under their eyes.
     fun loadMore() {
         if (loadingMore) return
         loadingMore = true
-        // Remember the bubble at the top of the viewport: when the older page
-        // slides in above it, that bubble must stay exactly where it is.
-        listState.layoutInfo.visibleItemsInfo
-            .firstOrNull { item ->
-                val key = item.key
-                key is String && key != LOAD_MORE_KEY && !key.startsWith(DAY_KEY_PREFIX)
-            }
-            ?.let { first ->
-                anchorKey = first.key as String
-                anchorOffset = first.offset - listState.layoutInfo.viewportStartOffset
-                anchorArmed = true
-            }
         scope.launch {
+            val startedAt = System.currentTimeMillis()
             val more = runCatching { repository.loadMore(conversationId) }.getOrDefault(false)
+            val spent = System.currentTimeMillis() - startedAt
+            if (spent < MORE_LOADING_MS) delay(MORE_LOADING_MS - spent)
             if (!more) atStart = true
             loadingMore = false
-            // Nothing changed (no older page): drop the anchor so a later
-            // message cannot trigger a stale restore.
-            delay(ANCHOR_GRACE_MS)
-            anchorArmed = false
-        }
-    }
-
-    // Older messages have just been inserted above the viewport: put the
-    // anchored bubble back where it was, so the list never jerks around.
-    LaunchedEffect(thread) {
-        if (!anchorArmed) return@LaunchedEffect
-        anchorArmed = false
-        val key = anchorKey ?: return@LaunchedEffect
-        anchorKey = null
-        val at = thread.indexOfFirst { it.key == key }
-        if (at < 0) return@LaunchedEffect
-        runCatching {
-            listState.scrollToItem(at + if (atStart) 0 else 1, anchorOffset)
         }
     }
 
@@ -463,11 +441,8 @@ fun ChatScreen(
             }
 
             Box(Modifier.weight(1f).background(WhatscraftColors.threadBackground)) {
-                when {
-                    // Opening a chat shows a brief spinner before its page of
-                    // history lands (see ENTRY_LOADING_MS).
-                    loadingHistory -> LoadingThread()
-                    thread.isNotEmpty() -> LazyColumn(
+                if (thread.isNotEmpty()) {
+                    LazyColumn(
                         state = listState,
                         // Short threads rest on the bottom like every chat app:
                         // a handful of messages should not float at the top of
@@ -503,8 +478,15 @@ fun ChatScreen(
                             }
                         }
                     }
-                    else -> EmptyThread()
+                } else if (!loadingHistory) {
+                    EmptyThread()
                 }
+
+                // The entrance spinner rests on top of the thread while it
+                // settles: the list is already laid out behind it - parked on
+                // the newest messages - so the hand-over is a plain fade, with
+                // nothing jumping or hitching once the loading is over.
+                ThreadOpening(visible = loadingHistory)
             }
 
             Composer(
@@ -1018,6 +1000,23 @@ private fun DaySeparator(label: String) {
 }
 
 @Composable
+private fun ThreadOpening(visible: Boolean) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = EnterTransition.None,
+        exit = fadeOut(tween(THREAD_FADE_MS)),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(WhatscraftColors.threadBackground),
+        ) {
+            LoadingThread()
+        }
+    }
+}
+
+@Composable
 private fun LoadingThread() {
     Column(
         modifier = Modifier
@@ -1161,9 +1160,12 @@ private const val TYPING_LAPSE_MS = 1_800L
 /** How long the loading spinner stays when a conversation is opened. */
 private const val ENTRY_LOADING_MS = 1_000L
 
-/** Grace period before an unconsumed scroll anchor is dropped. */
-private const val ANCHOR_GRACE_MS = 400L
+/** How long the "load earlier" row spins before the older page settles in. */
+private const val MORE_LOADING_MS = 500L
 
-/** LazyColumn keys shared with the scroll-anchor logic. */
+/** Cross-fade between the entrance spinner and the list behind it. */
+private const val THREAD_FADE_MS = 260
+
+/** LazyColumn keys shared by the entry and paging logic. */
 private const val LOAD_MORE_KEY = "load-more"
 private const val DAY_KEY_PREFIX = "day-"
