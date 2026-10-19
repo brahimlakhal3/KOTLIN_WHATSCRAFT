@@ -17,8 +17,8 @@ android {
         applicationId = "com.brahim.whatscraft"
         minSdk = 24
         targetSdk = 37
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -116,9 +116,6 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
-
-    // End-to-end encryption primitives (X25519, Ed25519, HKDF).
-    implementation(libs.bouncycastle)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

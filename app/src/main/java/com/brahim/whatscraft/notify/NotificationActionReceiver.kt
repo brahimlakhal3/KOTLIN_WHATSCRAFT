@@ -9,7 +9,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Handles the notification buttons. The reply goes through the repository, so a
- * message typed from the lock screen is encrypted exactly like one typed in the
+ * message typed from the lock screen is queued exactly like one typed in the
  * app.
  */
 class NotificationActionReceiver : BroadcastReceiver() {

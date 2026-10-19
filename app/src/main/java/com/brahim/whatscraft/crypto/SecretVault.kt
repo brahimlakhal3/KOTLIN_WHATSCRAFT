@@ -16,12 +16,10 @@ import javax.crypto.spec.GCMParameterSpec
  *
  * One AES-256-GCM key lives inside the Keystore (hardware-isolated on most
  * modern phones, so it cannot be extracted even from a rooted device's
- * filesystem). Everything sensitive - the X25519/Ed25519 private keys and the
- * local copy of decrypted message text - is sealed with it before being written
- * to disk.
+ * filesystem). Session tokens are sealed with it before being written to disk.
  *
- * Note: Keystore keys are per-install. Removing the app removes the key, which
- * is why message history is fetched back from the relay and re-decrypted.
+ * Note: Keystore keys are per-install. Removing the app removes the key; the
+ * session simply signs in again.
  */
 class SecretVault(context: Context) {
 

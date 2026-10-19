@@ -1,11 +1,11 @@
 package com.brahim.whatscraft.di
 
 import android.content.Context
-import com.brahim.whatscraft.crypto.IdentityStore
 import com.brahim.whatscraft.crypto.SecretVault
 import com.brahim.whatscraft.data.ApiClient
 import com.brahim.whatscraft.data.AuthProvider
 import com.brahim.whatscraft.data.ChatRepository
+import com.brahim.whatscraft.data.DeviceStore
 import com.brahim.whatscraft.data.SessionManager
 import com.brahim.whatscraft.data.SessionStore
 import com.brahim.whatscraft.data.SettingsStore
@@ -34,7 +34,7 @@ class Container(context: Context) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val vault = SecretVault(appContext)
-    val identityStore = IdentityStore(vault)
+    val deviceStore = DeviceStore(appContext)
     val settings = SettingsStore(appContext)
     val sessions = SessionStore(appContext, vault)
     val notifier = Notifier(appContext)
@@ -70,8 +70,7 @@ class Container(context: Context) {
         auth = auth,
         socket = socket,
         database = database,
-        identityStore = identityStore,
-        vault = vault,
+        deviceStore = deviceStore,
         sessions = sessions,
         settings = settings,
         notifier = notifier,

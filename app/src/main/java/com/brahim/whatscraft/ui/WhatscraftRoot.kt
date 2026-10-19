@@ -21,7 +21,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.ChatBubble
-import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
@@ -139,7 +139,7 @@ fun WhatscraftRoot(
 private fun LoadingGate() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Icon(
-            imageVector = Icons.Rounded.Lock,
+            imageVector = Icons.Rounded.Cloud,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(28.dp),

@@ -36,7 +36,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Keeps the encrypted WebSocket open so messages and notifications
+        <!-- Keeps the relay WebSocket open so messages and notifications
              arrive while the app is in the background. No Firebase project
              required; see README for the optional FCM setup. -->
         <service

@@ -1,23 +1,14 @@
 package com.brahim.whatscraft.data
 
 import com.brahim.whatscraft.BuildConfig
-import com.brahim.whatscraft.crypto.Crypto
-import com.brahim.whatscraft.crypto.IdentityStore
-import com.brahim.whatscraft.crypto.MessageCipher
-import com.brahim.whatscraft.crypto.SecretVault
 import com.brahim.whatscraft.data.local.AppDatabase
 import com.brahim.whatscraft.data.local.ContactEntity
-import com.brahim.whatscraft.data.local.ConversationEntity
-import com.brahim.whatscraft.data.local.MessageEntity
 import com.brahim.whatscraft.data.model.ChatMessage
 import com.brahim.whatscraft.data.model.ChatSummary
 import com.brahim.whatscraft.data.model.Contact
 import com.brahim.whatscraft.data.model.ConversationDto
 import com.brahim.whatscraft.data.model.DeviceRegistration
-import com.brahim.whatscraft.data.model.EnvelopeDto
 import com.brahim.whatscraft.data.model.FriendDto
-import com.brahim.whatscraft.data.model.KeysDeviceDto
-import com.brahim.whatscraft.data.model.KeysMemberDto
 import com.brahim.whatscraft.data.model.MessageBodyDto
 import com.brahim.whatscraft.data.model.MessageDto
 import com.brahim.whatscraft.data.model.MessageStatus
@@ -27,19 +18,16 @@ import com.brahim.whatscraft.data.model.Relationship
 import com.brahim.whatscraft.data.model.SendMessageRequest
 import com.brahim.whatscraft.data.model.ServerFrame
 import com.brahim.whatscraft.data.model.UserDto
-import com.brahim.whatscraft.data.model.WrappedKeyDto
-import com.brahim.whatscraft.data.model.WhatsCraftJson
 import com.brahim.whatscraft.notify.MessageNotifier
 import com.brahim.whatscraft.util.IsoTime
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -47,67 +35,52 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Everything the UI needs, in one place.
  *
- * Responsibilities:
- *   - keeps the local cache in sync with the relay,
- *   - encrypts outgoing messages and decrypts incoming ones,
- *   - tracks presence, typing and read receipts,
- *   - raises notifications for chats that are not on screen.
- *
- * The plaintext of a message exists in only two places: the sender's phone while
- * it is being written, and this repository's memory. On disk it is sealed with
- * the Keystore key.
+ * Messages live in the cloud only. Opening a conversation fetches its newest
+ * window from the relay, "load earlier" fetches another window, and the relay
+ * stores the plain text. Nothing about a message is written to the phone:
+ * signing out, reinstalling, or opening a chat on another device all show the
+ * same history.
  */
 class ChatRepository(
     private val api: ApiClient,
     private val auth: AuthProvider,
     private val socket: SocketClient,
     private val database: AppDatabase,
-    private val identityStore: IdentityStore,
-    private val vault: SecretVault,
+    private val deviceStore: DeviceStore,
     private val sessions: SessionStore,
     private val settings: SettingsStore,
     private val notifier: MessageNotifier,
     private val scope: CoroutineScope,
 ) {
 
-    private val conversationsDao = database.conversations()
-    private val messagesDao = database.messages()
     private val contactsDao = database.contacts()
 
-    private val json = WhatsCraftJson
+    /** Conversation metadata as the relay last described it, plus live typing. */
+    private data class ConversationState(
+        val dtos: Map<String, ConversationDto> = emptyMap(),
+        val typing: Map<String, Set<String>> = emptyMap(),
+    )
 
-    /** Cached conversation directories (user -> devices -> public keys). */
-    private data class Directory(val members: List<KeysMemberDto>, val fetchedAt: Long)
-
-    private val directories = ConcurrentHashMap<String, Directory>()
-
-    /** conversationId -> userIds currently typing. */
-    private val typing = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
-    private val typingState = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
-
-    /** How many messages each conversation currently shows; grown by [loadMore]. */
-    private val windowSizes = MutableStateFlow<Map<String, Int>>(emptyMap())
-
-    /** Conversations whose relay history was pulled to its end (no older pages). */
-    private val relayExhausted = MutableStateFlow<Set<String>>(emptySet())
+    private val conversationState = MutableStateFlow(ConversationState())
 
     /**
-     * Opening a sealed string is a Keystore round trip, so the recently opened
-     * plaintexts are kept: a new message must not re-open the whole window.
-     * LRU, guarded by the map's own monitor.
+     * Raw message rows for chats opened in this session, oldest first. Reaction
+     * rows are kept here too; [messages] hides them and folds them onto the
+     * bubble they belong to.
      */
-    private val plaintextCache = object : LinkedHashMap<String, Pair<String, String>>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<String, String>>): Boolean =
-            size > PLAINTEXT_CACHE_MAX
-    }
+    private val messageState = MutableStateFlow<Map<String, List<ChatMessage>>>(emptyMap())
+
+    /** Whether an older page exists on the relay for each opened conversation. */
+    private val historyMore = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
+    /** conversationId -> userIds currently typing. */
+    private val typingState = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
 
     /** Socket sends wait on these until the relay acknowledges the message. */
     private val acks = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
@@ -127,7 +100,10 @@ class ChatRepository(
     private val _syncing = MutableStateFlow(false)
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
 
+    @Volatile
     private var started = false
+
+    @Volatile
     private var lastServerUrl: String? = null
 
     @Volatile
@@ -143,56 +119,23 @@ class ChatRepository(
             .flowOn(Dispatchers.Default)
 
     val conversations: Flow<List<ChatSummary>> =
-        combine(conversationsDao.observeAll(), typing) { rows, typingMap ->
-            rows.map { row -> toSummary(row, typingMap[row.id].orEmpty()) }
-        }.flowOn(Dispatchers.Default)
+        conversationState
+            .map { state ->
+                val me = sessions.current?.userId
+                state.dtos.values
+                    .map { dto -> dto.toSummary(state.typing[dto.id].orEmpty(), me) }
+                    .sortedByDescending { it.lastMessageAt }
+            }
+            .flowOn(Dispatchers.Default)
 
     /**
-     * The newest slice of the conversation, oldest first. Only the visible
-     * window is decrypted, and all mapping happens off the main thread so a
-     * keystroke in the composer never competes with crypto.
-     *
-     * Reactions travel as ordinary sealed rows with `kind = "reaction"`; they
-     * never become bubbles. Instead they are collapsed per sender (the newest
-     * reaction wins, so removing one is just an empty emoji) and attached to
-     * the message they point at.
+     * The thread shown on screen. Rows are already plain text from the relay;
+     * mapping and reaction folding happen off the main thread.
      */
     fun messages(conversationId: String): Flow<List<ChatMessage>> =
-        combine(messagesDao.observe(conversationId), windowSizes) { rows, windows ->
-            val visibleRows = rows.filter { it.kind != KIND_REACTION }
-            val window = (windows[conversationId] ?: INITIAL_WINDOW).coerceAtLeast(1)
-            val from = (visibleRows.size - window).coerceAtLeast(0)
-            val slice = visibleRows.subList(from, visibleRows.size)
-            val visibleIds = slice.mapTo(HashSet(slice.size)) { it.id }
-            val me = sessions.current?.userId
-
-            // target -> sender -> emoji (insertion order is the order they were
-            // first reacted, which keeps the chips stable as they update).
-            val latest = LinkedHashMap<String, LinkedHashMap<String, String>>()
-            rows.forEach { row ->
-                if (row.kind != KIND_REACTION) return@forEach
-                val reaction = parseReaction(row) ?: return@forEach
-                val (target, emoji) = reaction
-                if (target !in visibleIds) return@forEach
-                val bySender = latest.getOrPut(target) { LinkedHashMap() }
-                if (emoji.isEmpty()) bySender.remove(row.senderId) else bySender[row.senderId] = emoji
-            }
-
-            val reactionsByTarget = HashMap<String, List<Reaction>>(latest.size)
-            latest.forEach { (target, bySender) ->
-                val byEmoji = LinkedHashMap<String, IntArray>()
-                bySender.forEach { (sender, emoji) ->
-                    val tally = byEmoji.getOrPut(emoji) { intArrayOf(0, 0) }
-                    tally[0] += 1
-                    if (sender == me) tally[1] = 1
-                }
-                reactionsByTarget[target] = byEmoji.map { (emoji, tally) ->
-                    Reaction(emoji = emoji, count = tally[0], mine = tally[1] == 1)
-                }
-            }
-
-            slice.map { row -> toChatMessage(row, reactionsByTarget[row.id].orEmpty()) }
-        }.flowOn(Dispatchers.Default)
+        messageState
+            .map { state -> render(state[conversationId].orEmpty()) }
+            .flowOn(Dispatchers.Default)
 
     fun isSignedIn(): Boolean = sessions.isSignedIn
 
@@ -208,33 +151,10 @@ class ChatRepository(
         )
     }
 
-    /** This install's identity key, as published to the relay. */
-    fun myIdentityKey(): String = Crypto.b64(identityStore.load().identity.publicKey)
-
-    /**
-     * The sixty-digit safety number to compare out loud with [userId]. Null until
-     * their device keys have been fetched.
-     */
-    suspend fun safetyNumber(userId: String): String? {
-        val theirKey = contactsDao.byId(userId)?.deviceKeysJson
-            ?.let { encoded ->
-                runCatching {
-                    json.decodeFromString(ListSerializer(KeysDeviceDto.serializer()), encoded)
-                }.getOrNull()
-            }
-            ?.firstOrNull { it.identityKey.isNotBlank() }
-            ?.identityKey
-            ?: return null
-        return MessageCipher.safetyNumber(myIdentityKey(), theirKey)
-    }
-
     // ------------------------------------------------------------ lifecycle --
 
     /** Wires up the socket and starts syncing. Safe to call repeatedly. */
     init {
-        // These collectors live for the whole process. [start] runs again after
-        // a sign-out/sign-in cycle, and collecting the frame flow twice would
-        // process every message twice: double unread counts, double alerts.
         scope.launch {
             settings.settings.collect { updated ->
                 val url = updated.serverUrl.ifBlank { BuildConfig.DEFAULT_SERVER_URL }
@@ -247,9 +167,6 @@ class ChatRepository(
         }
         scope.launch { socket.frames.collect(::onFrame) }
         scope.launch { typingTicker() }
-        // Anything written while the relay was unreachable leaves on its own:
-        // the moment the connection is back, and on a slow beat afterwards in
-        // case a single send failed while the socket stayed up.
         scope.launch { queueTicker() }
     }
 
@@ -259,14 +176,10 @@ class ChatRepository(
 
         api.baseUrl = settings.current.serverUrl.ifBlank { BuildConfig.DEFAULT_SERVER_URL }
         lastServerUrl = api.baseUrl
-        identityStore.load()
 
         socket.start(
             scope = scope,
             urlProvider = { api.webSocketUrl() },
-            // Long-lived links outlive access tokens: the provider renews the
-            // pair shortly before it expires, so a reconnect after the relay
-            // drops an old token always carries a fresh one.
             tokenProvider = { auth.freshAccessToken() },
         )
 
@@ -288,27 +201,21 @@ class ChatRepository(
         }
     }
 
-    /**
-     * Announces this device's public keys so the other side can encrypt to it.
-     * The relay upserts by id, so calling this on every sync is harmless.
-     */
+    /** Registers this device so access tokens and push delivery keep working. */
     suspend fun publishDevice() {
-        val identity = identityStore.load()
+        val device = deviceStore.load()
         runCatching {
             api.registerDevice(
                 DeviceRegistration(
-                    id = identity.deviceId,
-                    name = identity.deviceName,
+                    id = device.id,
+                    name = device.name,
                     platform = "android",
-                    identityKey = identity.identityPublic,
-                    signingKey = identity.signingPublic,
                 ),
             )
             devicePublished = true
         }.onFailure {
-            // Registering the keys is background housekeeping: it retries on
-            // the next sync, and a relay that is waking up must not throw a
-            // snackbar over whatever the user is reading.
+            // Background housekeeping: a relay that is waking up must not show
+            // a snackbar over whatever the user is reading.
         }
     }
 
@@ -317,7 +224,6 @@ class ChatRepository(
         socket.stop()
         started = false
         devicePublished = false
-        directories.clear()
         if (refreshToken != null) {
             runCatching { api.logout(refreshToken) }
         }
@@ -332,29 +238,20 @@ class ChatRepository(
         socket.stop()
         started = false
         devicePublished = false
-        directories.clear()
         sessions.clear()
         clearCache()
-        identityStore.secureWipe()
-        vault.destroy()
+        deviceStore.secureWipe()
         notifier.cancelAll()
     }
 
-    /** Forgets this device's keys and re-registers with fresh ones. */
-    suspend fun regenerateIdentity() {
-        identityStore.regenerate()
-        directories.clear()
-        devicePublished = false
-        publishDevice()
-    }
-
     private suspend fun clearCache() {
-        messagesDao.clear()
-        conversationsDao.clear()
         contactsDao.clear()
-        synchronized(plaintextCache) { plaintextCache.clear() }
-        windowSizes.value = emptyMap()
-        relayExhausted.value = emptySet()
+        conversationState.value = ConversationState()
+        messageState.value = emptyMap()
+        historyMore.value = emptyMap()
+        typingState.clear()
+        synchronized(acks) { acks.clear() }
+        inFlight.clear()
     }
 
     // -------------------------------------------------------------- profile --
@@ -371,7 +268,10 @@ class ChatRepository(
 
     suspend fun setConversationMuted(conversationId: String, muted: Boolean) {
         runCatching { api.setMuted(conversationId, muted) }
-        conversationsDao.setMuted(conversationId, muted)
+        conversationState.update { state ->
+            val dto = state.dtos[conversationId] ?: return@update state
+            state.copy(dtos = state.dtos + (conversationId to dto.copy(muted = muted)))
+        }
     }
 
     // -------------------------------------------------------------- friends --
@@ -379,24 +279,17 @@ class ChatRepository(
     suspend fun refreshContacts() {
         val graph = api.friends()
         val now = IsoTime.now()
-        val known = contactsDao.all().associateBy { it.id }
         val rows = mutableListOf<ContactEntity>()
 
         fun build(entity: FriendDto, relationship: Relationship) {
-            val existing = known[entity.user.id]
             rows += ContactEntity(
                 id = entity.user.id,
                 username = entity.user.username,
                 displayName = entity.user.displayName,
                 about = entity.user.about,
                 shade = entity.user.shade,
-                lastSeen = entity.user.lastSeen ?: existing?.lastSeen,
-                online = entity.online,
                 relationship = relationship.name,
                 requestId = entity.id,
-                deviceKeysJson = existing?.deviceKeysJson,
-                fingerprint = existing?.fingerprint,
-                keyChanged = existing?.keyChanged ?: false,
                 updatedAt = now,
             )
         }
@@ -406,17 +299,25 @@ class ChatRepository(
         graph.outgoing.forEach { build(it, Relationship.PendingOutgoing) }
         contactsDao.upsert(rows)
 
-        // Drop contacts that no longer exist anywhere in the graph.
         val liveIds = rows.map { it.id }.toSet()
-        known.keys.filterNot { liveIds.contains(it) }.forEach { contactsDao.delete(it) }
+        contactsDao.all().filterNot { liveIds.contains(it.id) }.forEach { contactsDao.delete(it.id) }
 
-        // A direct chat only exists while the connection does. This also
-        // cleans up after a removal that happened while this phone was offline
-        // (the relay's `conversation_removed` frame could not be delivered).
-        conversationsDao.all()
-            .filter { it.kind != "group" }
-            .filter { it.peerId != null && it.peerId !in liveIds }
-            .forEach { forgetConversation(it.id) }
+        // A direct chat only exists while the connection does. The relay sends
+        // `conversation_removed`, but this also cleans up after a removal that
+        // happened while the phone was offline.
+        conversationState.update { state ->
+            val stale = state.dtos.values
+                .filter { it.kind != "group" }
+                .filter { dto -> dto.peer(sessions.current?.userId.orEmpty())?.id?.let { it !in liveIds } == true }
+                .map { it.id }
+                .toSet()
+            if (stale.isEmpty()) {
+                state
+            } else {
+                state.copy(dtos = state.dtos.filterKeys { it !in stale })
+            }
+        }
+        messageState.update { it.filterKeys { id -> conversationState.value.dtos.containsKey(id) } }
     }
 
     suspend fun addContact(username: String) {
@@ -425,13 +326,9 @@ class ChatRepository(
     }
 
     suspend fun acceptContact(requestId: String) {
-        val response = api.acceptFriendRequest(requestId)
+        api.acceptFriendRequest(requestId)
         refreshContacts()
         refreshConversations()
-        response.conversationId?.let { conversationId ->
-            directories.remove(conversationId)
-            runCatching { ensureHistory(conversationId) }
-        }
     }
 
     suspend fun declineContact(requestId: String) {
@@ -442,10 +339,10 @@ class ChatRepository(
     suspend fun removeContact(userId: String) {
         api.removeFriend(userId)
         contactsDao.delete(userId)
-        // The relay deletes the direct chat for both sides; drop it here too so
-        // the list updates instantly and messages still in the outbox cannot
-        // keep targeting a conversation that no longer exists.
-        conversationsDao.byPeer(userId)?.let { forgetConversation(it.id) }
+        val direct = conversationState.value.dtos.values
+            .filter { it.kind == "direct" && it.peer(sessions.current?.userId.orEmpty())?.id == userId }
+            .map { it.id }
+        direct.forEach { forgetConversation(it) }
         refreshContacts()
         runCatching { refreshConversations() }
     }
@@ -456,35 +353,59 @@ class ChatRepository(
     // -------------------------------------------------------- conversations --
 
     suspend fun refreshConversations() {
-        val me = sessions.current?.userId ?: return
         val remote = api.conversations()
-        val existing = conversationsDao.all().associateBy { it.id }
-
-        conversationsDao.upsert(remote.map { dto -> dto.toEntity(me = me, previous = existing[dto.id]) })
-
-        // Conversations that vanished from the relay keep their last message but
-        // lose the unread badge.
-        val liveIds = remote.map { it.id }.toSet()
-        existing.values
-            .filterNot { liveIds.contains(it.id) }
-            .filter { it.unread != 0 }
-            .forEach { conversationsDao.upsert(it.copy(unread = 0, updatedAt = IsoTime.now())) }
+        conversationState.update { state ->
+            val merged = remote.associateBy { it.id }.mapValues { (id, dto) ->
+                val pending = messageState.value[id].orEmpty()
+                    .filter { it.seq == 0L && it.kind != KIND_REACTION }
+                    .maxByOrNull { it.createdAt }
+                if (pending != null) {
+                    val preview = pending.previewDto()
+                    val current = dto.lastMessage
+                    if (current == null || pending.createdAt > IsoTime.parse(current.createdAt)) {
+                        dto.copy(lastMessage = preview)
+                    } else {
+                        dto
+                    }
+                } else {
+                    dto
+                }
+            }
+            val keptTyping = state.typing.filterKeys { merged.containsKey(it) }
+            state.copy(dtos = merged, typing = keptTyping)
+        }
     }
 
     suspend fun openConversation(peerId: String): String {
         val dto = api.openConversation(peerId)
-        conversationsDao.upsert(
-            dto.toEntity(me = sessions.current?.userId, previous = conversationsDao.byId(dto.id)),
-        )
-        directories.remove(dto.id)
+        putConversation(dto)
         return dto.id
     }
 
     suspend fun markConversationRead(conversationId: String) {
-        val newest = messagesDao.newestSeq(conversationId) ?: return
+        val dto = conversationState.value.dtos[conversationId]
+        val newest = maxOf(
+            messageState.value[conversationId].orEmpty().maxOfOrNull { it.seq } ?: 0L,
+            dto?.lastMessage?.seq ?: 0L,
+            dto?.lastReadSeq ?: 0L,
+        )
         if (newest <= 0) return
-        conversationsDao.markRead(conversationId, newest)
+
+        val alreadyRead = dto != null && dto.unread == 0 && dto.lastReadSeq >= newest
+        conversationState.update { state ->
+            val current = state.dtos[conversationId] ?: return@update state
+            state.copy(
+                dtos = state.dtos + (
+                    conversationId to current.copy(
+                        unread = 0,
+                        lastReadSeq = maxOf(current.lastReadSeq, newest),
+                    )
+                    ),
+            )
+        }
         notifier.cancelForConversation(conversationId)
+        if (alreadyRead) return
+
         if (settings.current.readReceipts) {
             socket.sendRead(conversationId, newest)
             runCatching { api.markRead(conversationId, newest) }
@@ -494,302 +415,204 @@ class ChatRepository(
     fun setActiveConversation(conversationId: String?) {
         _activeConversation.value = conversationId
         if (conversationId != null) {
-            // Every entry opens on the newest messages (INITIAL_WINDOW of
-            // them) with the list at the bottom; re-opening never pays for
-            // what a previous visit pulled - older pages are re-loaded with
-            // the button, 30 at a time.
-            windowSizes.update { it + (conversationId to INITIAL_WINDOW) }
+            // Cloud-only entries always start from a fresh download. Dropping
+            // the old rows now means the entrance spinner covers a blank list,
+            // never stale history from a previous visit.
+            messageState.update { it - conversationId }
+            historyMore.update { it - conversationId }
             scope.launch { markConversationRead(conversationId) }
         }
     }
 
     /**
-     * Seeds a conversation that has never been opened on this phone (or came
-     * back from a reinstall) with its newest page. Returns true while older
-     * messages are still reachable - hidden locally or waiting on the relay.
+     * Fetches the newest [INITIAL_WINDOW] messages. Returns true while the relay
+     * still has older pages.
      */
     suspend fun ensureHistory(conversationId: String): Boolean {
-        if (messagesDao.newest(conversationId, 1).isEmpty()) {
-            val page = api.messages(conversationId, before = null, limit = HISTORY_PAGE)
-            val usable = page.messages.filter { it.seq > clearedUpTo(conversationId) }
-            if (usable.isEmpty()) {
-                // Empty, or everything the relay holds was cleared on this
-                // phone: older messages are cleared too (seq only decreases).
-                markRelayEnd(conversationId, exhausted = true)
-            } else {
-                store(usable, conversationId)
-                markRelayEnd(conversationId, exhausted = !page.hasMore)
-            }
+        val page = api.messages(conversationId, before = null, limit = INITIAL_WINDOW)
+        val me = sessions.current?.userId
+        val fetched = page.messages.map { it.toChatMessage(me) }
+
+        // Keep anything that arrived while the request was in flight (a new
+        // socket frame or a message typed just before the screen opened).
+        val newestFetched = fetched.maxOfOrNull { it.seq } ?: 0L
+        val localOnly = messageState.value[conversationId].orEmpty().filter { row ->
+            row.seq == 0L || (row.seq > newestFetched && row.seq > 0)
         }
-        return olderReachable(conversationId)
+
+        putMessages(conversationId, mergeMessages(localOnly, fetched))
+        historyMore.update { it + (conversationId to page.hasMore) }
+        return page.hasMore
     }
 
     /**
-     * Pulls what arrived while this phone was away (socket down, app killed,
-     * phone rebooted) so the newest bubble really is the newest. Cheap: a
-     * local check first, then a walk backwards from the relay's newest page
-     * until it meets rows already stored. Runs after the chat is on screen,
-     * so entering never waits for it.
-     */
-    suspend fun syncNewer(conversationId: String) {
-        val localNewest = messagesDao.newestSeq(conversationId) ?: return
-        if (localNewest <= 0) return
-        // The conversation preview tracks the newest seq the relay holds.
-        val serverNewest = conversationsDao.byId(conversationId)?.lastMessageSeq ?: 0L
-        if (serverNewest <= localNewest) return
-
-        var before: Long? = null
-        var pages = 0
-        while (pages++ < MAX_CATCHUP_PAGES) {
-            val page = api.messages(conversationId, before = before, limit = HISTORY_PAGE)
-            if (page.messages.isEmpty()) return
-            val oldest = page.messages.minOf { it.seq }
-            store(page.messages, conversationId)
-            // The page overlaps what we already had: the gap is closed.
-            if (oldest <= localNewest || !page.hasMore) return
-            before = oldest
-        }
-    }
-
-    /** Pulls one older page from the relay; records when the start is reached. */
-    private suspend fun loadOlder(conversationId: String) {
-        val before = messagesDao.oldestSeq(conversationId)?.takeIf { it > 0 }
-        val page = api.messages(conversationId, before = before, limit = HISTORY_PAGE)
-        val usable = page.messages.filter { it.seq > clearedUpTo(conversationId) }
-        if (usable.isEmpty()) {
-            markRelayEnd(conversationId, exhausted = true)
-            return
-        }
-        store(usable, conversationId)
-        markRelayEnd(conversationId, exhausted = !page.hasMore)
-    }
-
-    /**
-     * Grows the visible slice by [WINDOW_STEP]: first from the local database
-     * (instant), then by pulling an older page from the relay. Returns true
-     * while older messages remain reachable.
+     * Pulls one older page from the relay. Returns true while older messages
+     * remain reachable.
      */
     suspend fun loadMore(conversationId: String): Boolean {
-        var shown = windowSizes.value[conversationId] ?: INITIAL_WINDOW
-        val total = messagesDao.countVisible(conversationId)
-
-        // The local history shrank (chat cleared): resync the window first.
-        if (total < shown) {
-            shown = total.coerceAtLeast(1)
-            windowSizes.update { it + (conversationId to shown) }
+        val current = messageState.value[conversationId].orEmpty()
+        val oldest = current.filter { it.seq > 0 }.minOfOrNull { it.seq }
+        if (oldest == null) {
+            historyMore.update { it + (conversationId to false) }
+            return false
         }
 
-        if (shown < total) {
-            windowSizes.update { it + (conversationId to (shown + WINDOW_STEP).coerceAtMost(total)) }
-            return olderReachable(conversationId)
-        }
-
-        val before = total
-        loadOlder(conversationId)
-        val grown = messagesDao.countVisible(conversationId)
-        if (grown > before) {
-            // Reveal the page that just landed; anything deeper stays hidden.
-            windowSizes.update { it + (conversationId to (shown + WINDOW_STEP).coerceAtMost(grown)) }
-        }
-        return olderReachable(conversationId)
-    }
-
-    /**
-     * True while anything older than the visible window is reachable: rows
-     * still hidden locally, or a relay page not pulled yet.
-     */
-    private suspend fun olderReachable(conversationId: String): Boolean {
-        val shown = windowSizes.value[conversationId] ?: INITIAL_WINDOW
-        if (messagesDao.countVisible(conversationId) > shown) return true
-        return conversationId !in relayExhausted.value
-    }
-
-    private fun markRelayEnd(conversationId: String, exhausted: Boolean) {
-        relayExhausted.update { ids ->
-            if (exhausted) ids + conversationId else ids - conversationId
-        }
-    }
-
-    /**
-     * A bubble just landed in the open conversation. The window normally
-     * already holds [INITIAL_WINDOW] messages, so this only matters right
-     * after a clear, when fewer rows are on screen: new bubbles grow the
-     * window with them instead of hiding older ones without a button.
-     */
-    private fun noteArrival(conversationId: String) {
-        if (_activeConversation.value != conversationId) return
-        windowSizes.update { windows ->
-            val shown = windows[conversationId] ?: INITIAL_WINDOW
-            if (shown >= INITIAL_WINDOW) windows else windows + (conversationId to (shown + 1))
-        }
-    }
-
-    private suspend fun store(dtos: List<MessageDto>, conversationId: String) {
-        val cleared = clearedUpTo(conversationId)
+        val page = api.messages(conversationId, before = oldest, limit = WINDOW_STEP)
         val me = sessions.current?.userId
-        val identities = runCatching { directory(conversationId) }.getOrDefault(emptyList())
-        messagesDao.upsert(
-            dtos.filter { it.seq > cleared }.mapNotNull { dto -> dto.toEntity(me, identities) },
-        )
+        val fetched = page.messages.map { it.toChatMessage(me) }
+        putMessages(conversationId, mergeMessages(current, fetched))
+        historyMore.update { it + (conversationId to page.hasMore) }
+        return page.hasMore
     }
 
-    /** Highest seq this conversation has cleared locally (0 = nothing cleared). */
-    private fun clearedUpTo(conversationId: String): Long =
-        settings.current.cleared[conversationId] ?: 0L
+    /**
+     * Fills the gap after a reconnect without disturbing the pages already
+     * loaded: fetches the newest window and merges it into whatever the open
+     * conversation currently shows. This also retries an entry that failed
+     * while the relay was waking up.
+     */
+    suspend fun syncNewer(conversationId: String) {
+        val page = api.messages(conversationId, before = null, limit = INITIAL_WINDOW)
+        val me = sessions.current?.userId
+        val fetched = page.messages.map { it.toChatMessage(me) }
+        if (fetched.isEmpty()) return
+
+        val current = messageState.value[conversationId].orEmpty()
+        putMessages(conversationId, mergeMessages(current, fetched))
+        if (historyMore.value[conversationId] == null) {
+            historyMore.update { it + (conversationId to page.hasMore) }
+        }
+        if (_activeConversation.value == conversationId) {
+            runCatching { markConversationRead(conversationId) }
+        }
+    }
 
     // ----------------------------------------------------------------- clear --
 
     /**
-     * Deletes this conversation's messages from the phone - only from the phone.
-     * The relay keeps its ciphertext, but a local watermark hides everything up
-     * to the newest seq so history cannot silently come back.
+     * Hides this conversation's history for this account. The relay keeps the
+     * other person's copy and new messages arrive normally.
      */
     suspend fun clearConversation(conversationId: String) {
-        val newest = messagesDao.newestSeq(conversationId) ?: 0
-        settings.markCleared(conversationId, newest)
-        messagesDao.clearConversation(conversationId)
-        conversationsDao.clearLastMessage(conversationId)
-        windowSizes.update { it + (conversationId to INITIAL_WINDOW) }
-        // Nothing older is reachable through the watermark anymore.
-        markRelayEnd(conversationId, exhausted = true)
+        runCatching { api.clearConversation(conversationId) }
+            .onFailure { _lastError.value = it.message ?: "Could not clear this chat." }
+        val newest = messageState.value[conversationId].orEmpty().maxOfOrNull { it.seq } ?: 0L
+        messageState.update { it - conversationId }
+        historyMore.update { it + (conversationId to false) }
+        conversationState.update { state ->
+            val dto = state.dtos[conversationId] ?: return@update state
+            state.copy(
+                dtos = state.dtos + (
+                    conversationId to dto.copy(
+                        lastMessage = null,
+                        unread = 0,
+                        lastReadSeq = maxOf(dto.lastReadSeq, newest),
+                    )
+                    ),
+            )
+        }
         notifier.cancelForConversation(conversationId)
     }
 
-    /**
-     * Forgets a whole conversation locally. Used when a connection is removed:
-     * both phones lose the chat until a new invitation is accepted.
-     */
-    private suspend fun forgetConversation(conversationId: String) {
-        messagesDao.clearConversation(conversationId)
-        conversationsDao.delete(conversationId)
-        directories.remove(conversationId)
-        windowSizes.update { it - conversationId }
-        relayExhausted.update { it - conversationId }
-        notifier.cancelForConversation(conversationId)
-        synchronized(plaintextCache) { plaintextCache.clear() }
-    }
-
-    /** Deletes every message on this phone. Contacts, keys and chats stay. */
+    /** Deletes every message in every chat for this account. */
     suspend fun clearAllMessages() {
-        val conversations = conversationsDao.all()
-        val markers = conversations.mapNotNull { conversation ->
-            val newest = messagesDao.newestSeq(conversation.id) ?: return@mapNotNull null
-            if (newest <= 0) null else conversation.id to newest
-        }.toMap()
+        runCatching { api.clearAllMessages() }
+            .onFailure { _lastError.value = it.message ?: "Could not clear your messages." }
+        messageState.value = emptyMap()
+        historyMore.value = emptyMap()
+        conversationState.update { state ->
+            state.copy(
+                dtos = state.dtos.mapValues { (_, dto) ->
+                    dto.copy(lastMessage = null, unread = 0)
+                },
+            )
+        }
+        conversationState.value.dtos.keys.forEach { notifier.cancelForConversation(it) }
+    }
 
-        settings.markAllCleared(markers)
-        messagesDao.clear()
-        conversationsDao.clearAllLastMessages()
-        synchronized(plaintextCache) { plaintextCache.clear() }
-        windowSizes.value = emptyMap()
-        relayExhausted.value = emptySet()
-        conversations.forEach { notifier.cancelForConversation(it.id) }
+    /** Forgets a whole conversation locally (a connection was removed). */
+    private fun forgetConversation(conversationId: String) {
+        messageState.update { it - conversationId }
+        historyMore.update { it - conversationId }
+        conversationState.update { state ->
+            state.copy(
+                dtos = state.dtos - conversationId,
+                typing = state.typing - conversationId,
+            )
+        }
+        notifier.cancelForConversation(conversationId)
     }
 
     // ------------------------------------------------------------- messages --
 
-    /** Encrypts and sends a text message. Returns right after the local echo. */
+    /** Sends a text message. The bubble appears immediately, cloud-first. */
     suspend fun sendText(conversationId: String, text: String) {
         val body = text.trim()
         if (body.isEmpty()) return
         val me = sessions.current ?: return
-        val identity = identityStore.load()
-
-        val messageId = UUID.randomUUID().toString()
-        val sealed = vault.sealString(body, messageId)
-        val now = IsoTime.format(IsoTime.now())
-
-        // 1. Local echo, so the bubble appears instantly.
-        messagesDao.upsert(
-            MessageEntity(
-                id = messageId,
-                conversationId = conversationId,
-                senderId = me.userId,
-                senderDeviceId = identity.deviceId,
-                seq = 0,
-                kind = "text",
-                bodyJson = null,
-                sealedText = sealed,
-                createdAt = now,
-                status = MessageStatus.Sending.name.lowercase(),
-                mine = true,
-            ),
-        )
-        conversationsDao.setLastMessage(
-            id = conversationId,
-            messageId = messageId,
+        val now = IsoTime.now()
+        val message = ChatMessage(
+            id = UUID.randomUUID().toString(),
+            conversationId = conversationId,
+            text = body,
+            mine = true,
             senderId = me.userId,
-            sealed = sealed,
-            at = now,
+            status = MessageStatus.Sending,
+            createdAt = now,
             seq = 0,
+            kind = "text",
         )
-
-        noteArrival(conversationId)
-        transmit(conversationId, messageId, body)
+        addMessage(message)
+        previewSent(message)
+        transmit(conversationId, message.id, body)
     }
 
     /**
-     * Sends a reaction to [targetMessageId]. An empty [emoji] removes the
-     * reaction. Reactions are sealed and delivered like any other message, so
-     * the relay never learns which message was reacted to (or with what).
+     * Sends a reaction. An empty [emoji] removes it. Reactions are ordinary
+     * cloud rows of kind `reaction`; the thread folds them onto the target.
      */
     suspend fun react(conversationId: String, targetMessageId: String, emoji: String) {
         val me = sessions.current ?: return
-        val identity = identityStore.load()
-        val messageId = UUID.randomUUID().toString()
-        val payload = "$REACTION_PREFIX|$targetMessageId|$emoji"
-        val sealed = vault.sealString(payload, messageId)
-        val now = IsoTime.format(IsoTime.now())
-
-        messagesDao.upsert(
-            MessageEntity(
-                id = messageId,
-                conversationId = conversationId,
-                senderId = me.userId,
-                senderDeviceId = identity.deviceId,
-                seq = 0,
-                kind = KIND_REACTION,
-                bodyJson = null,
-                sealedText = sealed,
-                createdAt = now,
-                status = MessageStatus.Sending.name.lowercase(),
-                mine = true,
-            ),
+        val message = ChatMessage(
+            id = UUID.randomUUID().toString(),
+            conversationId = conversationId,
+            text = "$REACTION_PREFIX|$targetMessageId|$emoji",
+            mine = true,
+            senderId = me.userId,
+            status = MessageStatus.Sending,
+            createdAt = IsoTime.now(),
+            seq = 0,
+            kind = KIND_REACTION,
         )
-
-        transmit(conversationId, messageId, payload, kind = KIND_REACTION)
+        addMessage(message)
+        transmit(conversationId, message.id, message.text, kind = KIND_REACTION)
     }
 
-    /** Re-sends a message that failed (or was queued while offline). */
+    /** Re-sends a message that failed or was queued while offline. */
     suspend fun resend(messageId: String) {
-        val entity = messagesDao.byId(messageId) ?: return
-        val text = entity.sealedText?.let { runCatching { vault.openString(it, messageId) }.getOrNull() } ?: return
-        messagesDao.setStatus(messageId, MessageStatus.Sending.name.lowercase())
-        transmit(entity.conversationId, messageId, text, kind = entity.kind)
+        val row = findMessage(messageId) ?: return
+        updateMessage(messageId) { it.copy(status = MessageStatus.Sending) }
+        transmit(row.conversationId, row.id, row.text, kind = row.kind)
     }
 
     /**
-     * Sends everything still waiting for the relay: messages written while
-     * offline and ones that failed on a flaky socket. Runs automatically on
-     * reconnect and on a slow beat, and manually from pull-to-refresh.
+     * Sends everything still waiting: messages written while offline and ones
+     * that failed on a flaky socket. Runs on reconnect and on a slow beat.
      */
     suspend fun flushQueue() {
         if (!sessions.isSignedIn) return
         queueMutex.withLock {
             val now = System.currentTimeMillis()
-            messagesDao.unsent()
+            messageState.value.values
+                .flatten()
                 .filter { it.seq <= 0 }
                 .filter { row ->
                     when (row.status) {
-                        MessageStatus.Queued.name.lowercase(),
-                        MessageStatus.Failed.name.lowercase(),
+                        MessageStatus.Queued,
+                        MessageStatus.Failed,
                         -> true
 
-                        // A send that never got an ack (the process died, or the
-                        // socket vanished) must not spin forever.
-                        MessageStatus.Sending.name.lowercase() ->
-                            now - IsoTime.parse(row.createdAt) > SEND_ACK_TIMEOUT_MS
-
+                        MessageStatus.Sending -> now - row.createdAt > SEND_ACK_TIMEOUT_MS
                         else -> false
                     }
                 }
@@ -808,59 +631,19 @@ class ChatRepository(
     private suspend fun transmit(
         conversationId: String,
         messageId: String,
-        plaintext: String,
+        text: String,
         kind: String = "text",
     ) {
-        // A tap-to-retry and a queue flush can fire together; only one transmit
-        // per message may be on the wire.
         if (!inFlight.add(messageId)) return
-        val identity = identityStore.load()
         try {
-            val recipients = directory(conversationId)
-                .flatMap { member ->
-                    member.devices
-                        .filter { it.identityKey.isNotBlank() }
-                        .map { MessageCipher.RecipientDevice(it.id, it.identityKey) }
-                }
-            check(recipients.isNotEmpty()) { "Nobody to encrypt for yet" }
-
-            val sealed = MessageCipher.seal(
-                identity = identity.identity,
-                signing = identity.signing,
-                conversationId = conversationId,
-                messageId = messageId,
-                plaintext = plaintext,
-                devices = recipients,
-            )
-
-            val bodyDto = MessageBodyDto(
-                alg = sealed.body.alg,
-                iv = sealed.body.iv,
-                ct = sealed.body.ct,
-                sig = sealed.body.sig,
-            )
-            val envelopes = sealed.envelopes.map { envelope ->
-                EnvelopeDto(
-                    deviceId = envelope.deviceId,
-                    wrappedKey = WrappedKeyDto(envelope.wrappedKey.iv, envelope.wrappedKey.ct),
-                )
-            }
-
-            messagesDao.byId(messageId)?.let { row ->
-                messagesDao.upsert(row.copy(bodyJson = json.encodeToString(MessageBodyDto.serializer(), bodyDto)))
-            }
-
-            // 2. Prefer the socket; fall back to REST when it is down. A write
-            // can disappear into a socket that still looks open, so socket
-            // sends wait for the relay's ack and fall into the queue on timeout.
+            val body = MessageBodyDto(text = text)
             val ack = CompletableDeferred<Unit>()
             acks[messageId] = ack
             try {
                 val sentOverSocket = socket.sendMessage(
                     id = messageId,
                     conversationId = conversationId,
-                    body = bodyDto,
-                    envelopes = envelopes,
+                    body = body,
                     clientId = messageId,
                     kind = kind,
                 )
@@ -874,19 +657,17 @@ class ChatRepository(
                         SendMessageRequest(
                             id = messageId,
                             kind = kind,
-                            body = bodyDto,
-                            envelopes = envelopes,
+                            body = body,
                             clientId = messageId,
                         ),
                     )
-                    confirmSent(messageId, response.message.seq, response.message.createdAt)
+                    confirmSent(conversationId, messageId, response.message.seq, response.message.createdAt)
                 }
             } finally {
                 acks.remove(messageId)
             }
         } catch (error: ApiException) {
             if (error.status == 0) {
-                // No reachable relay: not a failure, just a wait.
                 markUndelivered(messageId, MessageStatus.Queued)
             } else {
                 markUndelivered(messageId, MessageStatus.Failed)
@@ -903,25 +684,41 @@ class ChatRepository(
     }
 
     /** Sets a status unless the relay confirmed the message mid-flight. */
-    private suspend fun markUndelivered(messageId: String, status: MessageStatus) {
-        val row = messagesDao.byId(messageId) ?: return
+    private fun markUndelivered(messageId: String, status: MessageStatus) {
+        val row = findMessage(messageId) ?: return
         if (row.seq > 0) return
-        messagesDao.setStatus(messageId, status.name.lowercase())
+        updateMessage(messageId) { it.copy(status = status) }
     }
 
-    private suspend fun confirmSent(messageId: String, seq: Long, createdAt: String) {
-        val existing = messagesDao.byId(messageId) ?: return
-        messagesDao.confirm(messageId, seq, MessageStatus.Sent.name.lowercase(), createdAt)
+    private fun confirmSent(conversationId: String, messageId: String, seq: Long, createdAt: String) {
+        val existing = findMessage(messageId) ?: return
+        val whenSent = IsoTime.parse(createdAt).takeIf { it > 0 } ?: existing.createdAt
+        val confirmed = existing.copy(
+            seq = seq,
+            status = MessageStatus.Sent,
+            createdAt = whenSent,
+        )
+        updateMessage(messageId) { confirmed }
         // A reaction must never replace the conversation preview.
         if (existing.kind == KIND_REACTION) return
-        conversationsDao.setLastMessage(
-            id = existing.conversationId,
-            messageId = messageId,
-            senderId = existing.senderId,
-            sealed = existing.sealedText,
-            at = createdAt,
-            seq = seq,
-        )
+        conversationState.update { state ->
+            val dto = state.dtos[conversationId] ?: return@update state
+            state.copy(
+                dtos = state.dtos + (
+                    conversationId to dto.copy(
+                        lastMessage = MessageDto(
+                            id = messageId,
+                            conversationId = conversationId,
+                            senderId = existing.senderId,
+                            seq = seq,
+                            kind = existing.kind,
+                            body = MessageBodyDto(existing.text),
+                            createdAt = IsoTime.format(whenSent),
+                        ),
+                    )
+                    ),
+            )
+        }
     }
 
     fun clearError() {
@@ -937,7 +734,7 @@ class ChatRepository(
 
     private suspend fun typingTicker() {
         while (true) {
-            kotlinx.coroutines.delay(1_500)
+            delay(1_500)
             val now = IsoTime.now()
             var changed = false
             typingState.entries.forEach { (conversationId, users) ->
@@ -952,7 +749,8 @@ class ChatRepository(
     }
 
     private fun publishTyping() {
-        typing.value = typingState.mapValues { (_, users) -> users.keys.toSet() }
+        val snapshot = typingState.mapValues { (_, users) -> users.keys.toSet() }
+        conversationState.update { state -> state.copy(typing = snapshot) }
     }
 
     // ------------------------------------------------------- frame handling --
@@ -960,14 +758,21 @@ class ChatRepository(
     private suspend fun onFrame(frame: ServerFrame) {
         when (frame) {
             is ServerFrame.Ready -> {
-                if (sessions.isSignedIn) refreshAll()
+                if (sessions.isSignedIn) {
+                    refreshAll()
+                    // If the relay was asleep when a chat opened, its fetch
+                    // failed and that chat is still empty. Fill it in now.
+                    _activeConversation.value?.let { id ->
+                        runCatching { syncNewer(id) }
+                    }
+                }
             }
 
             is ServerFrame.IncomingMessage -> handleIncoming(frame.conversationId, frame.message)
 
             is ServerFrame.Ack -> {
                 acks.remove(frame.id)?.complete(Unit)
-                confirmSent(frame.id, frame.seq, frame.createdAt)
+                confirmSent(frame.conversationId, frame.id, frame.seq, frame.createdAt)
             }
 
             is ServerFrame.Typing -> {
@@ -980,24 +785,35 @@ class ChatRepository(
                 publishTyping()
             }
 
-            is ServerFrame.Read -> messagesDao.markReadUpTo(frame.conversationId, frame.seq)
+            is ServerFrame.Read -> {
+                val me = sessions.current?.userId
+                if (frame.userId != me) {
+                    messageState.update { state ->
+                        val rows = state[frame.conversationId] ?: return@update state
+                        state + (
+                            frame.conversationId to rows.map { row ->
+                                if (row.mine && row.seq in 1..frame.seq) {
+                                    row.copy(status = MessageStatus.Read)
+                                } else {
+                                    row
+                                }
+                            }
+                            )
+                    }
+                }
+            }
 
-            // Presence is not part of this app: no dot, no "last seen", and no
-            // writes that would only sit unused in the database.
             is ServerFrame.Presence -> Unit
 
             is ServerFrame.ConversationChanged -> {
-                val previous = conversationsDao.byId(frame.conversation.id)
-                conversationsDao.upsert(
-                    frame.conversation.toEntity(sessions.current?.userId, previous),
-                )
-                directories.remove(frame.conversation.id)
-                runCatching { refreshConversations() }
+                putConversation(frame.conversation)
+                if (_activeConversation.value == frame.conversation.id) {
+                    markConversationRead(frame.conversation.id)
+                }
             }
 
             is ServerFrame.ConversationRemoved -> {
                 forgetConversation(frame.conversationId)
-                runCatching { refreshConversations() }
             }
 
             is ServerFrame.Friend -> {
@@ -1017,14 +833,15 @@ class ChatRepository(
     /**
      * The relay's `err` frames cover everything from a rejected handshake to a
      * refused message. Background noise stays silent: auth is renewed on its
-     * own, and a refused send fails only that bubble instead of a snackbar out
-     * of nowhere.
+     * own, and a refused send fails only that bubble.
      */
-    private suspend fun handleServerError(frame: ServerFrame.Error) {
+    private fun handleServerError(frame: ServerFrame.Error) {
         when {
             frame.code == "unauthorized" || frame.code == "auth_required" -> {
-                runCatching { auth.refresh(usedToken = sessions.current?.accessToken) }
-                socket.reconnectNow()
+                scope.launch {
+                    runCatching { auth.refresh(usedToken = sessions.current?.accessToken) }
+                    socket.reconnectNow()
+                }
             }
 
             frame.clientId != null -> {
@@ -1043,273 +860,219 @@ class ChatRepository(
     }
 
     private suspend fun handleIncoming(conversationId: String, dto: MessageDto) {
-        val me = sessions.current ?: return
-        // Locally cleared history must never reappear through a resync.
-        if (dto.seq > 0 && dto.seq <= clearedUpTo(conversationId)) return
-        val identities = runCatching { directory(conversationId) }.getOrDefault(emptyList())
-        val entity = dto.toEntity(me.userId, identities) ?: return
+        val me = sessions.current?.userId ?: return
+        val mine = dto.senderId == me
+        val row = dto.toChatMessage(me)
+        val existing = findMessage(dto.id)
 
-        // A reconnect or a resync can hand us a message we already stored. The
-        // row is refreshed either way, but only a first delivery may count as
-        // unread or raise a notification.
-        val seen = messagesDao.byId(dto.id) != null
+        // Keep an open thread current. For chats not open in this session the
+        // message stays in the cloud; opening the chat fetches it again.
+        if (existing != null || _activeConversation.value == conversationId || messageState.value.containsKey(conversationId)) {
+            upsertMessage(row)
+        }
 
-        messagesDao.upsert(entity)
+        // A reaction has no preview, unread count or notification; it only
+        // repaints the bubble it belongs to.
+        if (dto.kind == KIND_REACTION) return
 
-        // A reaction has no preview, no unread count and no notification; it
-        // only repaints the bubble it belongs to.
-        if (entity.kind == KIND_REACTION) return
+        val conversation = conversationState.value.dtos[conversationId]
+        conversationState.update { state ->
+            val current = state.dtos[conversationId] ?: return@update state
+            state.copy(
+                dtos = state.dtos + (
+                    conversationId to current.copy(
+                        lastMessage = dto,
+                        unread = if (!mine && existing == null) current.unread + 1 else current.unread,
+                    )
+                    ),
+            )
+        }
 
-        // A freshly delivered bubble belongs on screen while the chat is open.
-        if (!seen) noteArrival(conversationId)
+        if (mine) return
 
-        val mine = dto.senderId == me.userId
-        conversationsDao.setLastMessage(
-            id = conversationId,
-            messageId = dto.id,
-            senderId = dto.senderId,
-            sealed = entity.sealedText,
-            at = dto.createdAt,
-            seq = dto.seq,
-        )
-
-        if (mine || seen) return
-
-        val conversation = conversationsDao.byId(conversationId)
-        val isActive = _activeConversation.value == conversationId
-        if (isActive) {
+        if (_activeConversation.value == conversationId) {
             markConversationRead(conversationId)
-        } else {
-            conversationsDao.setUnread(conversationId, (conversation?.unread ?: 0) + 1)
+            return
         }
 
-        if (!isActive && !(conversation?.muted ?: false) && settings.current.notificationsEnabled) {
-            val sender = identities.firstOrNull { it.userId == dto.senderId }?.displayName?.takeIf { it.isNotBlank() }
-                ?: contactsDao.byId(dto.senderId)?.displayName?.takeIf { it.isNotBlank() }
-                ?: contactsDao.byId(dto.senderId)?.username
-                ?: "New message"
-            val preview = entity.sealedText?.let {
-                runCatching { vault.openString(it, dto.id) }.getOrNull()
-            }
-            notifier.onMessage(
-                conversationId = conversationId,
-                title = sender,
-                body = preview ?: "New message",
-                showPreview = settings.current.showMessagePreview,
-                messageId = dto.id,
-            )
+        if (conversation == null) {
+            runCatching { refreshConversations() }
         }
-    }
 
-    // ------------------------------------------------------------- directory --
+        val muted = conversation?.muted ?: conversationState.value.dtos[conversationId]?.muted ?: false
+        if (muted || !settings.current.notificationsEnabled) return
 
-    /**
-     * The device list (with public keys) for every member of a conversation.
-     * Cached briefly; refreshed on demand when a key is missing.
-     */
-    private suspend fun directory(conversationId: String, force: Boolean = false): List<KeysMemberDto> {
-        val cached = directories[conversationId]
-        if (!force && cached != null && IsoTime.now() - cached.fetchedAt < DIRECTORY_TTL_MS) {
-            return cached.members
-        }
-        val fresh = api.conversationKeys(conversationId).members
-        directories[conversationId] = Directory(fresh, IsoTime.now())
-        rememberFingerprints(fresh)
-        return fresh
-    }
-
-    /**
-     * Trust on first use: the first identity key we ever see for a contact is
-     * remembered. If it changes later the chat shows a warning until the user
-     * verifies the new safety number out of band.
-     */
-    private suspend fun rememberFingerprints(members: List<KeysMemberDto>) {
-        val me = sessions.current?.userId
-        val myKey = Crypto.b64(identityStore.load().identity.publicKey)
-        members.filter { it.userId != me }.forEach { member ->
-            val identityKey = member.devices.firstOrNull { it.identityKey.isNotBlank() }?.identityKey
-                ?: return@forEach
-            val contact = contactsDao.byId(member.userId) ?: return@forEach
-            val fingerprint = MessageCipher.safetyNumber(myKey, identityKey)
-            val previous = contact.fingerprint
-            contactsDao.upsert(
-                contact.copy(
-                    deviceKeysJson = json.encodeToString(ListSerializer(KeysDeviceDto.serializer()), member.devices),
-                    fingerprint = previous ?: fingerprint,
-                    keyChanged = previous != null && previous != fingerprint,
-                    updatedAt = IsoTime.now(),
-                ),
-            )
-        }
+        val sender = conversation?.members?.firstOrNull { it.id == dto.senderId }?.displayName?.takeIf { it.isNotBlank() }
+            ?: contactsDao.byId(dto.senderId)?.displayName?.takeIf { it.isNotBlank() }
+            ?: contactsDao.byId(dto.senderId)?.username
+            ?: "New message"
+        val preview = dto.body.text
+        notifier.onMessage(
+            conversationId = conversationId,
+            title = sender,
+            body = preview?.takeIf { it.isNotBlank() } ?: "New message",
+            showPreview = settings.current.showMessagePreview,
+            messageId = dto.id,
+        )
     }
 
     // -------------------------------------------------------------- mapping --
 
-    private suspend fun MessageDto.toEntity(me: String?, members: List<KeysMemberDto>): MessageEntity? {
-        val deviceId = identityStore.load().deviceId
-        val mine = senderId == me
-        val envelope = envelopes.firstOrNull { it.deviceId == deviceId }
+    private fun MessageDto.toChatMessage(me: String?): ChatMessage = ChatMessage(
+        id = id,
+        conversationId = conversationId,
+        text = body.text ?: LEGACY_MESSAGE,
+        mine = senderId == me,
+        senderId = senderId,
+        status = MessageStatus.Sent,
+        createdAt = IsoTime.parse(createdAt),
+        seq = seq,
+        kind = kind,
+    )
 
-        var text: String? = null
-        var status = MessageStatus.Sent
-        if (envelope != null) {
-            val senderDevices = members.firstOrNull { it.userId == senderId }?.devices.orEmpty()
-            // Prefer the device that actually sent it, then try the rest: a stale
-            // directory may not know which device authored the message.
-            val candidates = buildList {
-                senderDeviceId?.let { id -> senderDevices.firstOrNull { it.id == id }?.let { add(it) } }
-                addAll(senderDevices.filterNot { it.id == senderDeviceId })
-            }
-            text = openBody(candidates, envelope, conversationId, id, body)
-            if (text == null) status = MessageStatus.Undecryptable
-        } else if (mine) {
-            // Our own message: the plaintext is already here, but we do not have
-            // it in memory - re-seal it from the local copy when there is one.
-            val local = messagesDao.byId(id)
-            return local?.copy(seq = seq, createdAt = createdAt)
-        } else {
-            status = MessageStatus.Undecryptable
-        }
-
-        return MessageEntity(
-            id = id,
-            conversationId = conversationId,
-            senderId = senderId,
-            senderDeviceId = senderDeviceId,
-            seq = seq,
-            kind = kind,
-            bodyJson = json.encodeToString(MessageDto.serializer(), this),
-            sealedText = text?.let { vault.sealString(it, id) },
-            createdAt = createdAt,
-            status = status.name.lowercase(),
-            mine = mine,
-        )
-    }
-
-    /**
-     * Tries every candidate device of the sender until one of them unwraps the
-     * message. Returns null when none does (wrong directory, tampered message).
-     */
-    private fun openBody(
-        candidates: List<KeysDeviceDto>,
-        envelope: EnvelopeDto,
-        conversationId: String,
-        messageId: String,
-        body: MessageBodyDto,
-    ): String? {
-        val identity = identityStore.load()
-        candidates.forEach { device ->
-            val signingKey = device.signingKey ?: return@forEach
-            val attempt = runCatching {
-                MessageCipher.open(
-                    identity = identity.identity,
-                    myDeviceId = identity.deviceId,
-                    conversationId = conversationId,
-                    messageId = messageId,
-                    senderIdentityPublicB64 = device.identityKey,
-                    senderSigningPublicB64 = signingKey,
-                    body = MessageCipher.Body(body.alg, body.iv, body.ct, body.sig),
-                    envelope = MessageCipher.WrappedKey(envelope.wrappedKey.iv, envelope.wrappedKey.ct),
-                )
-            }
-            attempt.getOrNull()?.let { return it }
-        }
-        return null
-    }
-
-    private fun ConversationDto.toEntity(me: String?, previous: ConversationEntity?): ConversationEntity {
+    private fun ConversationDto.toSummary(typingUsers: Set<String>, me: String?): ChatSummary {
         val peer = peer(me.orEmpty())
-        // A conversation whose newest message was cleared here keeps an empty
-        // preview, even when a later sync still reports that message.
-        val cleared = clearedUpTo(id)
-        val lastIsCleared = lastMessage != null && lastMessage.seq <= cleared
-        return ConversationEntity(
-            id = id,
-            kind = kind,
-            title = title,
-            createdAt = createdAt,
-            // The local counter is the source of truth while the app runs (it is
-            // incremented per incoming frame); the relay's value is used the
-            // first time a conversation is seen.
-            lastReadSeq = maxOf(lastReadSeq, previous?.lastReadSeq ?: 0L),
-            muted = muted,
-            unread = previous?.unread ?: unread,
-            membersJson = json.encodeToString(ListSerializer(UserDto.serializer()), members),
-            peerId = peer?.id,
-            peerUsername = peer?.username,
-            peerDisplayName = peer?.displayName?.takeIf { it.isNotBlank() } ?: peer?.username ?: title,
-            peerShade = peer?.shade ?: 0,
-            peerOnline = previous?.peerOnline ?: false,
-            lastMessageId = if (lastIsCleared) null else (lastMessage?.id ?: previous?.lastMessageId),
-            lastMessageSenderId = if (lastIsCleared) null else (lastMessage?.senderId ?: previous?.lastMessageSenderId),
-            lastMessageSealed = if (lastIsCleared) null else previous?.lastMessageSealed,
-            lastMessageAt = if (lastIsCleared) previous?.lastMessageAt else (lastMessage?.createdAt ?: previous?.lastMessageAt),
-            lastMessageSeq = if (lastIsCleared) {
-                previous?.lastMessageSeq ?: 0L
-            } else {
-                maxOf(lastMessage?.seq ?: 0L, previous?.lastMessageSeq ?: 0L)
-            },
-            updatedAt = IsoTime.now(),
-        )
-    }
-
-    private fun toSummary(row: ConversationEntity, typingUsers: Set<String>): ChatSummary {
-        val preview = row.lastMessageSealed?.let { sealed ->
-            row.lastMessageId?.let { id -> runCatching { vault.openString(sealed, id) }.getOrNull() }
-        }
         return ChatSummary(
-            id = row.id,
-            title = row.peerDisplayName?.takeIf { it.isNotBlank() } ?: row.peerUsername ?: "Chat",
-            subtitle = preview,
-            shade = row.peerShade,
-            unread = row.unread,
-            muted = row.muted,
-            online = row.peerOnline,
-            isGroup = row.kind == "group",
-            peerId = row.peerId,
-            lastMessageAt = IsoTime.parse(row.lastMessageAt),
-            lastMessageMine = row.lastMessageSenderId == sessions.current?.userId,
+            id = id,
+            title = displayTitle(me.orEmpty()).ifBlank { "Chat" },
+            subtitle = lastMessage?.let(::previewText),
+            shade = peer?.shade ?: 0,
+            unread = unread,
+            muted = muted,
+            isGroup = kind == "group",
+            peerId = peer?.id,
+            lastMessageAt = IsoTime.parse(lastMessage?.createdAt ?: createdAt),
+            lastMessageMine = lastMessage?.senderId != null && lastMessage.senderId == me,
             typing = typingUsers.isNotEmpty(),
         )
     }
 
-    private fun toChatMessage(row: MessageEntity, reactions: List<Reaction>): ChatMessage = ChatMessage(
-        id = row.id,
-        conversationId = row.conversationId,
-        text = plaintext(row.sealedText, row.id),
-        mine = row.mine,
-        senderId = row.senderId,
-        status = MessageStatus.entries.firstOrNull { it.name.equals(row.status, ignoreCase = true) }
-            ?: MessageStatus.Sent,
-        createdAt = IsoTime.parse(row.createdAt),
-        seq = row.seq,
-        kind = row.kind,
-        reactions = reactions,
-    )
+    private fun previewText(message: MessageDto): String =
+        message.body.text?.takeIf { it.isNotBlank() } ?: "Message from an older version"
 
     /**
-     * A reaction row stores `react|<targetMessageId>|<emoji>` as its sealed
-     * plaintext. An empty emoji means "removed".
+     * Rows sorted oldest first, reactions last. Pending rows have seq 0, so
+     * they always sit at the end.
      */
-    private fun parseReaction(row: MessageEntity): Pair<String, String>? {
-        val payload = plaintext(row.sealedText, row.id)
+    private fun sortMessages(rows: List<ChatMessage>): List<ChatMessage> =
+        rows.sortedWith(
+            compareBy<ChatMessage>(
+                { if (it.seq == 0L) Long.MAX_VALUE else it.seq },
+                { it.createdAt },
+            ),
+        )
+
+    private fun mergeMessages(existing: List<ChatMessage>, incoming: List<ChatMessage>): List<ChatMessage> {
+        val byId = LinkedHashMap<String, ChatMessage>(existing.size + incoming.size)
+        existing.forEach { byId[it.id] = it }
+        incoming.forEach { message ->
+            val old = byId[message.id]
+            byId[message.id] = if (old != null && old.seq > 0 && message.seq == 0L) old else message
+        }
+        return sortMessages(byId.values.toList())
+    }
+
+    private fun render(rows: List<ChatMessage>): List<ChatMessage> {
+        if (rows.isEmpty()) return emptyList()
+        val visible = rows.filter { it.kind != KIND_REACTION }
+        if (visible.isEmpty()) return emptyList()
+        val visibleIds = visible.mapTo(HashSet(visible.size)) { it.id }
+
+        // target -> sender -> emoji (insertion order keeps chips stable).
+        val latest = LinkedHashMap<String, LinkedHashMap<String, String>>()
+        rows.forEach { row ->
+            if (row.kind != KIND_REACTION) return@forEach
+            val (target, emoji) = parseReaction(row.text) ?: return@forEach
+            if (target !in visibleIds) return@forEach
+            val bySender = latest.getOrPut(target) { LinkedHashMap() }
+            if (emoji.isEmpty()) bySender.remove(row.senderId) else bySender[row.senderId] = emoji
+        }
+
+        val reactionsByTarget = HashMap<String, List<Reaction>>(latest.size)
+        latest.forEach { (target, bySender) ->
+            val byEmoji = LinkedHashMap<String, IntArray>()
+            bySender.forEach { (sender, emoji) ->
+                val tally = byEmoji.getOrPut(emoji) { intArrayOf(0, 0) }
+                tally[0] += 1
+                if (sender == sessions.current?.userId) tally[1] = 1
+            }
+            reactionsByTarget[target] = byEmoji.map { (emoji, tally) ->
+                Reaction(emoji = emoji, count = tally[0], mine = tally[1] == 1)
+            }
+        }
+
+        return visible.map { row -> row.copy(reactions = reactionsByTarget[row.id].orEmpty()) }
+    }
+
+    /** `react|<targetMessageId>|<emoji>`; empty emoji removes the reaction. */
+    private fun parseReaction(payload: String): Pair<String, String>? {
         if (!payload.startsWith("$REACTION_PREFIX|")) return null
         val parts = payload.split('|', limit = 3)
         if (parts.size != 3) return null
         return parts[1] to parts[2]
     }
 
-    /** Decrypts with a small LRU cache so repeated emissions stay cheap. */
-    private fun plaintext(sealed: String?, id: String): String {
-        if (sealed == null) return UNDECRYPTABLE
-        synchronized(plaintextCache) {
-            plaintextCache[id]?.let { (cachedSealed, text) ->
-                if (cachedSealed == sealed) return text
-            }
+    private fun ChatMessage.previewDto(): MessageDto = MessageDto(
+        id = id,
+        conversationId = conversationId,
+        senderId = senderId,
+        seq = seq,
+        kind = kind,
+        body = MessageBodyDto(text),
+        createdAt = IsoTime.format(createdAt),
+    )
+
+    private fun putConversation(dto: ConversationDto) {
+        conversationState.update { state ->
+            state.copy(dtos = state.dtos + (dto.id to dto))
         }
-        val text = runCatching { vault.openString(sealed, id) }.getOrDefault(UNDECRYPTABLE)
-        synchronized(plaintextCache) { plaintextCache[id] = sealed to text }
-        return text
+    }
+
+    private fun putMessages(conversationId: String, rows: List<ChatMessage>) {
+        messageState.update { it + (conversationId to sortMessages(rows)) }
+    }
+
+    private fun addMessage(message: ChatMessage) {
+        messageState.update { state ->
+            val rows = (state[message.conversationId].orEmpty().filterNot { it.id == message.id } + message)
+            state + (message.conversationId to sortMessages(rows))
+        }
+    }
+
+    private fun upsertMessage(message: ChatMessage) {
+        addMessage(message)
+    }
+
+    private fun updateMessage(messageId: String, transform: (ChatMessage) -> ChatMessage) {
+        messageState.update { state ->
+            var changed = false
+            val next = state.mapValues { (_, rows) ->
+                rows.map { row ->
+                    if (row.id == messageId) {
+                        changed = true
+                        transform(row)
+                    } else {
+                        row
+                    }
+                }
+            }
+            if (changed) next else state
+        }
+    }
+
+    private fun findMessage(messageId: String): ChatMessage? =
+        messageState.value.values.firstNotNullOfOrNull { rows -> rows.firstOrNull { it.id == messageId } }
+
+    /** Puts the optimistic bubble at the top of the chat list immediately. */
+    private fun previewSent(message: ChatMessage) {
+        conversationState.update { state ->
+            val dto = state.dtos[message.conversationId] ?: return@update state
+            state.copy(
+                dtos = state.dtos + (
+                    message.conversationId to dto.copy(lastMessage = message.previewDto())
+                    ),
+            )
+        }
     }
 
     private fun toContact(row: ContactEntity) = Contact(
@@ -1318,30 +1081,20 @@ class ChatRepository(
         displayName = row.displayName,
         about = row.about,
         shade = row.shade,
-        online = row.online,
-        lastSeen = row.lastSeen?.let(IsoTime::parse),
         relationship = Relationship.entries.firstOrNull { it.name == row.relationship } ?: Relationship.None,
         requestId = row.requestId,
-        fingerprint = row.fingerprint,
-        keyChanged = row.keyChanged,
     )
 
     private companion object {
-        const val DIRECTORY_TTL_MS = 10 * 60 * 1000L
         const val TYPING_TTL_MS = 5_000L
-        const val HISTORY_PAGE = 40
 
         /**
-         * Messages shown when a conversation is opened - always the newest
+         * Messages fetched when a conversation is opened - always the newest
          * ones, with the view at the bottom - and per "load earlier" tap:
          * 30, then 60, then 90...
          */
         const val INITIAL_WINDOW = 30
         const val WINDOW_STEP = 30
-
-        /** Pages [ChatRepository.syncNewer] may pull in one catch-up. */
-        const val MAX_CATCHUP_PAGES = 25
-        const val PLAINTEXT_CACHE_MAX = 256
 
         /** How long a socket send waits for the relay's ack before queuing. */
         const val SEND_ACK_TIMEOUT_MS = 12_000L
@@ -1349,7 +1102,7 @@ class ChatRepository(
         /** Background retry beat for messages waiting on a connection. */
         const val QUEUE_RETRY_MS = 20_000L
 
-        const val UNDECRYPTABLE = "This message cannot be read on this device"
+        const val LEGACY_MESSAGE = "This message was sent by an older version of the app"
 
         /** Rows with this kind are reactions, never bubbles. */
         const val KIND_REACTION = "reaction"

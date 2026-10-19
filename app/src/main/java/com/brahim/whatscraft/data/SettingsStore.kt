@@ -100,7 +100,7 @@ data class AppSettings(
     val readReceipts: Boolean = true,
     val typingIndicators: Boolean = true,
     val enterToSend: Boolean = true,
-    /** Off by default: end-to-end encrypted message text stays off the lock screen. */
+    /** Off by default: message text stays off the lock screen. */
     val showMessagePreview: Boolean = false,
     /** Media/haptics. */
     val haptics: Boolean = true,

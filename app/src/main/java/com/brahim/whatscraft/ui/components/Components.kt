@@ -21,7 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -216,19 +216,19 @@ fun EmptyState(icon: ImageVector, title: String, body: String, modifier: Modifie
     }
 }
 
-/** "End-to-end encrypted" reassurance line used in empty chats and settings. */
+/** Quiet reassurance line used in empty chats and on the auth screen. */
 @Composable
-fun EncryptionNote(modifier: Modifier = Modifier, text: String = "Messages are end-to-end encrypted") {
+fun CloudNote(modifier: Modifier = Modifier, text: String = "Messages are stored in your relay") {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
         Icon(
-            imageVector = Icons.Rounded.Lock,
+            imageVector = Icons.Rounded.Cloud,
             contentDescription = null,
             tint = LocalContentColor.current.copy(alpha = 0.6f),
-            modifier = Modifier.size(12.dp),
+            modifier = Modifier.size(13.dp),
         )
         Spacer(Modifier.width(6.dp))
         Text(

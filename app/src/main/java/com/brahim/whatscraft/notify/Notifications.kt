@@ -14,9 +14,8 @@ import com.brahim.whatscraft.R
 /**
  * Notification plumbing: channels, ids, tap targets and actions.
  *
- * Nothing here knows about encryption; [Notifier] decides what text may be
- * shown (the user can keep message previews off, which keeps plaintext off the
- * lock screen).
+ * Nothing here decides what text may be shown; [Notifier] applies the user's
+ * preview setting, which can keep message words off the lock screen.
  */
 object Notifications {
 

@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DeleteSweep
@@ -36,7 +37,6 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Language
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Palette
@@ -87,7 +87,7 @@ import kotlinx.coroutines.launch
 internal enum class SettingsPage(val title: String) {
     Home("Settings"),
     Profile("Profile"),
-    Encryption("Encryption"),
+    Recovery("Recovery"),
     Appearance("Appearance"),
     Chats("Chats"),
     Notifications("Notifications"),
@@ -128,7 +128,6 @@ fun SettingsScreen(
     var recoveryCode by remember { mutableStateOf<String?>(null) }
     var changingPassword by remember { mutableStateOf(false) }
     var deletingAccount by remember { mutableStateOf(false) }
-    var rotatingKeys by remember { mutableStateOf(false) }
     var clearingMessages by remember { mutableStateOf(false) }
 
     AnimatedContent(
@@ -165,8 +164,7 @@ fun SettingsScreen(
                 onBack = { open(SettingsPage.Home) },
             )
 
-            SettingsPage.Encryption -> EncryptionPage(
-                container = container,
+            SettingsPage.Recovery -> RecoveryPage(
                 onBack = { open(SettingsPage.Home) },
                 onRecovery = {
                     scope.launch {
@@ -174,7 +172,6 @@ fun SettingsScreen(
                             .onSuccess { recoveryCode = it.recoveryCode }
                     }
                 },
-                onResetKey = { rotatingKeys = true },
             )
 
             SettingsPage.Appearance -> AppearancePage(
@@ -289,40 +286,14 @@ fun SettingsScreen(
         )
     }
 
-    if (rotatingKeys) {
-        AlertDialog(
-            onDismissRequest = { rotatingKeys = false },
-            title = { Text("Reset this device's key?") },
-            text = {
-                Text(
-                    "A new key means your old messages stay readable on this phone, but friends " +
-                        "will see a new safety number. Do this only if you believe your key was " +
-                        "compromised.",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        rotatingKeys = false
-                        scope.launch { runCatching { container.repository.regenerateIdentity() } }
-                    },
-                ) {
-                    Text("Reset key")
-                }
-            },
-            dismissButton = { TextButton(onClick = { rotatingKeys = false }) { Text("Cancel") } },
-        )
-    }
-
     if (clearingMessages) {
         AlertDialog(
             onDismissRequest = { clearingMessages = false },
             title = { Text("Delete all messages?") },
             text = {
                 Text(
-                    "Every conversation on this phone will be emptied. Your contacts, " +
-                        "friends and encryption keys stay. The relay only ever held " +
-                        "ciphertext, so nothing readable is deleted there.",
+                    "Every chat will be emptied for your account on every device. Your " +
+                        "contacts stay, and the other person keeps their own copy.",
                 )
             },
             confirmButton = {
@@ -384,10 +355,10 @@ private fun SettingsHome(
         item(key = "security") {
             SettingsGroup("Security") {
                 NavRow(
-                    icon = Icons.Rounded.Lock,
-                    title = "Encryption",
-                    subtitle = "Recovery code, this device's key, safety numbers",
-                    onClick = { onOpen(SettingsPage.Encryption) },
+                    icon = Icons.Rounded.Key,
+                    title = "Account recovery",
+                    subtitle = "A one-time code if you lose this phone",
+                    onClick = { onOpen(SettingsPage.Recovery) },
                 )
             }
         }
@@ -736,9 +707,9 @@ private fun ProfilePage(
 
         item(key = "note") {
             NoteCard(
-                text = "Your name and about are the only things friends see. Messages are " +
-                    "sealed on this phone before they ever leave it.",
-                icon = Icons.Rounded.Lock,
+                text = "Your name and about are the only things friends see. Chats are " +
+                    "stored in your relay and load on every device you sign in to.",
+                icon = Icons.Rounded.Cloud,
             )
         }
     }

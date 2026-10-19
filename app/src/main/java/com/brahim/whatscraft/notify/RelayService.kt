@@ -10,13 +10,13 @@ import com.brahim.whatscraft.WhatscraftApp
 import kotlinx.coroutines.launch
 
 /**
- * Keeps the encrypted websocket open while the app is in the background, so
+ * Keeps the relay websocket open while the app is in the background, so
  * messages and notifications arrive without a push provider.
  *
- * It is deliberately tiny: the connection, retry and crypto all live in
- * [com.brahim.whatscraft.data.ChatRepository]; this service only exists to tell
- * Android the process is doing something useful and to show the (silent,
- * minimum-importance) "listening" notification.
+ * It is deliberately tiny: the connection, retries and message handling all
+ * live in [com.brahim.whatscraft.data.ChatRepository]; this service only exists
+ * to tell Android the process is doing something useful and to show the
+ * (silent, minimum-importance) "listening" notification.
  */
 class RelayService : Service() {
 

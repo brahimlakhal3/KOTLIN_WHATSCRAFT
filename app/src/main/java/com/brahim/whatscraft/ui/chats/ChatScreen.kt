@@ -42,16 +42,15 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.PersonRemove
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Send
-import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -96,21 +95,17 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.brahim.whatscraft.data.model.ChatMessage
-import com.brahim.whatscraft.data.model.Contact
 import com.brahim.whatscraft.data.model.MessageStatus
 import com.brahim.whatscraft.data.model.Reaction
 import com.brahim.whatscraft.data.model.Relationship
 import com.brahim.whatscraft.di.Container
 import com.brahim.whatscraft.ui.components.Avatar
-import com.brahim.whatscraft.ui.components.EncryptionNote
 import com.brahim.whatscraft.ui.components.TypingDots
 import com.brahim.whatscraft.ui.theme.LocalBubbleStyle
 import com.brahim.whatscraft.ui.theme.LocalReduceMotion
@@ -143,20 +138,20 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
 
     val conversations by repository.conversations.collectAsStateWithLifecycle(initialValue = emptyList())
-    val contacts by repository.contacts.collectAsStateWithLifecycle(initialValue = emptyList())
     val messages by repository.messages(conversationId).collectAsStateWithLifecycle(initialValue = emptyList())
     val appSettings by container.settings.settings.collectAsStateWithLifecycle()
 
     val summary = conversations.firstOrNull { it.id == conversationId }
-    val peer = contacts.firstOrNull { it.id == summary?.peerId }
 
-    // Rebuilt only when the messages themselves change - not per keystroke,
-    // not per presence update.
+    // The entry effect suspends across network and delays, so it must read the
+    // list through an updated state holder rather than the captured value.
+    val currentMessages by rememberUpdatedState(messages)
+
+    // Rebuilt only when the messages themselves change - not per keystroke.
     val thread = remember(messages) { buildThread(messages) }
     val waiting = remember(messages) { messages.count { it.status == MessageStatus.Queued } }
 
     var menuOpen by remember { mutableStateOf(false) }
-    var showSafety by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var loadingMore by remember(conversationId) { mutableStateOf(false) }
     var atStart by remember(conversationId) { mutableStateOf(false) }
@@ -193,17 +188,15 @@ fun ChatScreen(
             // Give the collected list a beat to pick up what was just stored,
             // so the spinner hands over to messages, never to a blank frame.
             var waited = 0L
-            while (messages.isEmpty() && waited < 200L) {
+            while (currentMessages.isEmpty() && waited < 200L) {
                 delay(10)
                 waited += 10
             }
             loadingHistory = false
         }
-        openedEmpty = messages.isEmpty()
-        // Whatever the relay collected while this phone was away (process
-        // killed, phone rebooted...) lands after the screen is already up:
-        // entering never waits on the network.
-        runCatching { repository.syncNewer(conversationId) }
+        openedEmpty = currentMessages.isEmpty()
+        // The list was fetched from the cloud; nothing else is stored on the
+        // phone. Mark the newest message read once it is on screen.
         runCatching { repository.markConversationRead(conversationId) }
     }
 
@@ -340,18 +333,19 @@ fun ChatScreen(
                                     )
                                 }
                             } else {
-                                // The one line that matters in a private chat: the
-                                // lock and what it promises. No presence, no clocks.
+                                // Cloud chats have no presence and no "last
+                                // seen"; the useful status is where the
+                                // history lives.
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
-                                        imageVector = Icons.Rounded.Lock,
+                                        imageVector = Icons.Rounded.Cloud,
                                         contentDescription = null,
                                         tint = WhatscraftColors.onHeader.copy(alpha = 0.9f),
-                                        modifier = Modifier.size(12.dp),
+                                        modifier = Modifier.size(13.dp),
                                     )
                                     Spacer(Modifier.width(5.dp))
                                     Text(
-                                        text = "End-to-end encrypted",
+                                        text = "Synced in the cloud",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = WhatscraftColors.onHeader.copy(alpha = 0.9f),
                                         maxLines = 1,
@@ -371,14 +365,6 @@ fun ChatScreen(
                         Icon(Icons.Rounded.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Safety number") },
-                            leadingIcon = { Icon(Icons.Rounded.VerifiedUser, contentDescription = null) },
-                            onClick = {
-                                menuOpen = false
-                                showSafety = true
-                            },
-                        )
                         DropdownMenuItem(
                             text = { Text(if (summary?.muted == true) "Unmute" else "Mute") },
                             leadingIcon = { Icon(Icons.Rounded.NotificationsOff, contentDescription = null) },
@@ -426,14 +412,6 @@ fun ChatScreen(
                 .padding(padding)
                 .imePadding(),
         ) {
-            AnimatedVisibility(
-                visible = peer?.keyChanged == true,
-                enter = fadeIn(tween(Motion.QuickMillis)) + slideInVertically(),
-                exit = fadeOut(tween(Motion.QuickMillis)),
-            ) {
-                KeyChangedBanner(onReview = { showSafety = true })
-            }
-
             AnimatedVisibility(
                 visible = waiting > 0,
                 enter = fadeIn(tween(Motion.QuickMillis)) + slideInVertically { -it / 2 },
@@ -532,24 +510,15 @@ fun ChatScreen(
         }
     }
 
-    if (showSafety && summary?.peerId != null) {
-        SafetyNumberDialog(
-            container = container,
-            userId = summary.peerId,
-            name = summary.title,
-            onDismiss = { showSafety = false },
-        )
-    }
-
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Clear this chat?") },
             text = {
                 Text(
-                    "Every message in this conversation will be deleted from this phone. " +
-                        "The relay only holds encrypted bytes, and nothing is removed for " +
-                        "the other person.",
+                    "This chat's history will be removed from your account and every " +
+                        "device signed in to it. The other person keeps their copy, and " +
+                        "new messages still arrive.",
                 )
             },
             confirmButton = {
@@ -749,7 +718,6 @@ private fun MessageBubble(
     val clipboard = LocalClipboardManager.current
     val haptics = LocalHapticFeedback.current
     val reduceMotion = LocalReduceMotion.current
-    val undecryptable = message.status == MessageStatus.Undecryptable
     var menuOpen by remember(message.id) { mutableStateOf(false) }
 
     fun tick() {
@@ -793,10 +761,10 @@ private fun MessageBubble(
         ) {
             Column(horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start) {
                 Surface(
-                    color = when {
-                        undecryptable -> MaterialTheme.colorScheme.surfaceVariant
-                        message.mine -> WhatscraftColors.bubbleOutgoing
-                        else -> WhatscraftColors.bubbleIncoming
+                    color = if (message.mine) {
+                        WhatscraftColors.bubbleOutgoing
+                    } else {
+                        WhatscraftColors.bubbleIncoming
                     },
                     shape = bubbleShape(LocalBubbleStyle.current, message.mine),
                     modifier = Modifier
@@ -850,11 +818,10 @@ private fun MessageBubble(
                             text = annotated,
                             inlineContent = metaInline,
                             style = MaterialTheme.typography.bodyLarge,
-                            fontStyle = if (undecryptable) FontStyle.Italic else FontStyle.Normal,
-                            color = when {
-                                undecryptable -> MaterialTheme.colorScheme.onSurfaceVariant
-                                message.mine -> WhatscraftColors.onBubbleOutgoing
-                                else -> MaterialTheme.colorScheme.onSurface
+                            color = if (message.mine) {
+                                WhatscraftColors.onBubbleOutgoing
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
                             },
                         )
                         Row(
@@ -911,7 +878,6 @@ private fun MessageBubble(
                 HorizontalDivider()
                 DropdownMenuItem(
                     text = { Text("Copy text") },
-                    enabled = !undecryptable,
                     onClick = {
                         menuOpen = false
                         clipboard.setText(AnnotatedString(message.text))
@@ -966,7 +932,6 @@ private val QUICK_REACTIONS = listOf("❤️", "😂", "👍", "😮", "😢", "
 
 @Composable
 private fun bubbleSubtitleColor(message: ChatMessage): Color = when {
-    message.status == MessageStatus.Undecryptable -> MaterialTheme.colorScheme.onSurfaceVariant
     message.mine -> WhatscraftColors.onBubbleOutgoing.copy(alpha = 0.7f)
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
@@ -1007,13 +972,6 @@ private fun MessageStatusIcon(status: MessageStatus, color: Color, readColor: Co
             contentDescription = "Tap the message to retry",
             tint = color,
             modifier = Modifier.size(15.dp),
-        )
-
-        MessageStatus.Undecryptable -> Icon(
-            Icons.Rounded.Lock,
-            contentDescription = "Encrypted",
-            tint = color,
-            modifier = Modifier.size(12.dp),
         )
     }
 }
@@ -1087,7 +1045,7 @@ private fun EmptyThread() {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(
-            Icons.Rounded.Lock,
+            Icons.Rounded.Cloud,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(28.dp),
@@ -1096,101 +1054,12 @@ private fun EmptyThread() {
         Text("Say hello", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "This conversation is end-to-end encrypted. Messages are sealed on " +
-                "this phone and only the two of you hold the keys.",
+            text = "Messages are stored in the cloud, so this conversation loads on " +
+                "every device you sign in to.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-}
-
-@Composable
-private fun KeyChangedBanner(onReview: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-        ) {
-            Icon(
-                Icons.Rounded.ErrorOutline,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = "Their security code changed",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = onReview) { Text("Verify") }
-        }
-    }
-}
-
-@Composable
-private fun SafetyNumberDialog(
-    container: Container,
-    userId: String,
-    name: String,
-    onDismiss: () -> Unit,
-) {
-    val clipboard = LocalClipboardManager.current
-    var number by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
-
-    LaunchedEffect(userId) {
-        number = runCatching { container.repository.safetyNumber(userId) }.getOrNull()
-        loading = false
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Safety number with $name") },
-        text = {
-            Column {
-                Text(
-                    text = "Read these digits out loud, or compare them in person. " +
-                        "If they match on both phones, nobody is in the middle of this chat.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(16.dp))
-                val value = number
-                when {
-                    loading -> Text("Working...", style = MaterialTheme.typography.bodyMedium)
-                    value.isNullOrBlank() -> Text(
-                        text = "Their keys have not been downloaded yet. Open a chat and try again.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    else -> Text(
-                        text = value,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            val value = number
-            TextButton(
-                enabled = !value.isNullOrBlank(),
-                onClick = {
-                    value?.let { clipboard.setText(AnnotatedString(it)) }
-                    onDismiss()
-                },
-            ) {
-                Text("Copy")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-    )
 }
 
 private const val TYPING_LAPSE_MS = 1_800L

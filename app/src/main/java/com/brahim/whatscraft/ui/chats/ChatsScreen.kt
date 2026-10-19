@@ -49,7 +49,7 @@ import com.brahim.whatscraft.di.Container
 import com.brahim.whatscraft.ui.components.Avatar
 import com.brahim.whatscraft.ui.components.ConnectionPill
 import com.brahim.whatscraft.ui.components.EmptyState
-import com.brahim.whatscraft.ui.components.EncryptionNote
+import com.brahim.whatscraft.ui.components.CloudNote
 import com.brahim.whatscraft.ui.components.TypingDots
 import com.brahim.whatscraft.ui.components.UnreadBadge
 import com.brahim.whatscraft.util.TimeFormat
@@ -176,7 +176,7 @@ fun ChatsScreen(
 
                 item(key = "footer") {
                     Box(Modifier.padding(vertical = 28.dp), contentAlignment = Alignment.Center) {
-                        EncryptionNote(
+                        CloudNote(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 40.dp),

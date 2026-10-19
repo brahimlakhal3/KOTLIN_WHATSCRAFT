@@ -5,7 +5,6 @@ import com.brahim.whatscraft.data.model.ApiErrorDto
 import com.brahim.whatscraft.data.model.AuthResponse
 import com.brahim.whatscraft.data.model.ChangePasswordRequest
 import com.brahim.whatscraft.data.model.ConversationDto
-import com.brahim.whatscraft.data.model.ConversationKeysDto
 import com.brahim.whatscraft.data.model.DeleteAccountRequest
 import com.brahim.whatscraft.data.model.DeviceDto
 import com.brahim.whatscraft.data.model.DeviceRegistration
@@ -184,9 +183,6 @@ class ApiClient(
             authenticated = true,
         ).conversation
 
-    suspend fun conversationKeys(conversationId: String): ConversationKeysDto =
-        execute("GET", "/v1/conversations/$conversationId/keys", null, authenticated = true)
-
     suspend fun messages(conversationId: String, before: Long? = null, limit: Int = 40): MessagesPageDto {
         val query = buildString {
             append("?limit=").append(limit)
@@ -217,6 +213,24 @@ class ApiClient(
             "POST",
             "/v1/conversations/$conversationId/mute",
             encode(MuteRequest.serializer(), MuteRequest(muted)),
+            authenticated = true,
+        )
+    }
+
+    suspend fun clearConversation(conversationId: String) {
+        execute<kotlinx.serialization.json.JsonElement>(
+            "POST",
+            "/v1/conversations/$conversationId/clear",
+            null,
+            authenticated = true,
+        )
+    }
+
+    suspend fun clearAllMessages() {
+        execute<kotlinx.serialization.json.JsonElement>(
+            "POST",
+            "/v1/messages/clear",
+            null,
             authenticated = true,
         )
     }

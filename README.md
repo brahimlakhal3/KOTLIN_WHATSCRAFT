@@ -1,16 +1,23 @@
 # Whatscraft
 
 A WhatsApp‑style messenger for a small circle of friends. Android app +
-self‑hosted relay server, with real end‑to‑end encryption: **the server only
-ever stores and forwards ciphertext.** It cannot read messages, and neither
-can anyone who gets hold of the database.
+self‑hosted relay server. Chats are stored in the cloud: open a conversation
+on any signed‑in device and the newest messages load from the relay, newest at
+the bottom. **No message history is saved on the phone** — the app keeps only
+contacts on disk, and the relay keeps the text so every device sees the same
+conversation.
 
-- **Client** – Kotlin, Jetpack Compose (Material 3), Room, BouncyCastle crypto.
-  Five colour stories: **Monochrome** (default: ink and paper, a soft gray
-  conversation canvas, optional OLED black), **WhatsApp** (green accents,
-  teal chat header, beige conversation), and **Ocean**, **Berry** and
-  **Sunset** (bubbles, header and the app background all take the chosen
-  tint). `minSdk 24`.
+That is a deliberate trade‑off: simple, Messenger‑like chats instead of
+end‑to‑end encryption. The relay can read what it stores, so run your own or
+pick one you trust. Passwords are hashed with argon2id; the app never writes
+message rows to its database.
+
+- **Client** – Kotlin, Jetpack Compose (Material 3), Room (contacts only),
+  OkHttp/WebSocket, kotlinx.serialization. Ten colour stories: **Monochrome**
+  (default: ink and paper, a soft gray conversation canvas, optional OLED
+  black), **WhatsApp** (green accents, teal chat header, beige conversation),
+  plus **Ocean**, **Berry**, **Sunset**, **Forest**, **Rose**, **Lavender**,
+  **Sand** and **Midnight**. `minSdk 24`.
 - **Server** – Bun + Postgres, REST for auth/state and a WebSocket relay for
   live messages. Runs anywhere; this project uses the free tiers of
   [Render](https://render.com) (host, no card required) and
@@ -36,12 +43,12 @@ its own repository:
 ```
 app/                       Android application
   src/main/java/com/brahim/whatscraft/
-    crypto/                X25519/Ed25519/AES‑GCM primitives, keystore vault
+    crypto/                Keystore-backed vault for session tokens
     data/                  API client, WebSocket client, repository, Room
     notify/                foreground relay service + notifications
     di/Container.kt        tiny hand‑rolled dependency graph
     ui/                    Compose screens (auth, chats, contacts, settings)
-  src/test/                JVM unit tests, incl. cross‑implementation crypto
+  src/test/                JVM unit tests
 gradle/                    wrapper + version catalogue
 ```
 
@@ -50,42 +57,30 @@ deliberately **not** committed.
 
 ---
 
-## How the encryption works (protocol v1)
+## How messages are stored
 
-Each device generates two key pairs the first time it signs in:
+1. The app sends `{ id, kind, body: { text: "..." } }` over the WebSocket, or
+   over REST when the socket is down.
+2. The relay stores the row in Postgres and fans it out to every member's
+   other devices. The sending device gets an `ack` with the real sequence
+   number.
+3. Opening a conversation fetches the **newest 30** messages with
+   `GET /v1/conversations/:id/messages?limit=30`; **Load earlier messages**
+   walks back 30 at a time (30 → 60 → 90 …) using the `before` cursor.
+4. Reactions are ordinary rows of kind `reaction` (`react|<messageId>|<emoji>`)
+   and are folded onto the target bubble; they never replace the chat preview
+   or add unread.
 
-| Key | Algorithm | Stored as |
-| --- | --- | --- |
-| Identity | X25519 | seeds sealed by the Android Keystore (`SecretVault`) |
-| Signing | Ed25519 | same |
+There is no local message cache. That keeps the phone clean and makes every
+device identical, at the cost of needing a connection to read old chats:
+offline, a conversation opens empty and messages typed then wait in memory
+with a clock icon until the relay is reachable. The cloud has no presence
+signals at all — no online dot, no last seen, no profile photos to leak.
 
-Public keys are uploaded to the server and are visible to friends; private
-keys never leave the phone and are encrypted at rest with a Keystore‑backed
-AES‑GCM key.
-
-To send a message, the client:
-
-1. Generates a random **AES‑256‑GCM message key** and encrypts the text with
-   it (AAD `whatscraft/v1/msg|<conversation>|<msgId>`).
-2. For every recipient device, derives a **KEK** from X25519 ECDH via
-   HKDF‑SHA256 (`info = "whatscraft/v1/kek"`, salt =
-   `SHA256(senderPub‖recipientPub)`, standard base64, canonical padding), and
-   uses it to AES‑GCM‑wrap the message key (AAD
-   `whatscraft/v1/wrap|<conversation>|<msgId>|<deviceId>`).
-3. Signs the ciphertext with the Ed25519 key
-   (`whatscraft/v1/msg|<conversation>|<msgId>|<iv>|<ct>|<signingPub>`).
-
-The server stores per‑device wrapped keys plus one ciphertext blob. A device
-sends its own wrapped key when posting; the server fans out the other
-recipients' copies over WebSocket or push.
-
-**Safety number** – comparing the 60‑digit number shown on the contact's
-profile (SHA‑512 over both identity keys, sorted, in 12 groups of 5) out of
-band detects a server that swaps keys.
-
-Cross‑implementation checks make sure the Android (BouncyCastle) and server
-(WebCrypto) stacks agree bit‑for‑bit — see *Conformance checks* below. The
-server code never imports the private keys and cannot decrypt anything.
+**Clear messages** (`⋮` in a chat, or *Settings → Account*) is per account: the
+relay remembers how far you cleared, so your devices see an empty chat while
+the other person keeps their copy, and new messages still arrive. **Delete
+account** removes the account and every message from the relay.
 
 ---
 
@@ -103,9 +98,9 @@ Without `DATABASE_URL` the server uses an embedded **PGlite** database in
 `.data` — zero setup, good enough for development. Point `DATABASE_URL` at
 Postgres (e.g. Neon) for production.
 
-Run the end‑to‑end suite against a running server (51 assertions over
-registration, recovery, friends, conversations, messages, read receipts,
-reactions, unfriending, re‑inviting, WebSocket delivery, tamper rejection):
+Run the end‑to‑end suite against a running server (59 assertions over
+registration, recovery, friends, conversations, plaintext messages, history,
+read receipts, reactions, clearing, unfriending and re‑inviting):
 
 ```sh
 bun run smoke
@@ -190,7 +185,7 @@ Release builds default to `https://whatscraft-relay.onrender.com` (see
 `DEFAULT_SERVER_URL` in `app/build.gradle.kts`); debug builds default to
 `http://10.0.2.2:8080` for emulator use. On any install, you can change the
 address before signing in: on the sign‑in screen tap **Server** (or later,
-*Settings → Server*). HTTPS works out of the box; cleartext HTTP is allowed
+*Settings → Relay*). HTTPS works out of the box; cleartext HTTP is allowed
 only in debug builds.
 
 To try it on a phone before you have a public host: install the **debug**
@@ -198,22 +193,11 @@ APK (cleartext is permitted there), run the server on your computer, and set
 the relay to `http://<your-computer-LAN-IP>:8080` — phone and computer on the
 same Wi‑Fi.
 
-### Conformance checks
-
-Whenever you touch crypto or the wire format, run the three checks:
+### Tests
 
 ```sh
-# in the relay repository:
-bun run smoke            # protocol/API end to end
-bun run vectors          # seal a WebCrypto message -> JSON
-bun run verify-sealed    # open a Kotlin-sealed message in Bun
-
-# in this repository:
-./gradlew :app:testDebugUnitTest      # 9 JVM tests incl. opening that message
+./gradlew :app:testDebugUnitTest
 ```
-
-The vector step writes `app/src/test/resources/message-vectors.json` and must
-run **before** the unit tests when the protocol changes.
 
 ---
 
@@ -228,28 +212,25 @@ run **before** the unit tests when the protocol changes.
 3. Start chatting. New messages pop in with a short entrance animation; the
    clock sits at the end of the last line like WhatsApp. **Double‑tap** a
    message to send ❤️ (double‑tap again to take it back) or **long‑press** for
-   the emoji picker and copy. The header **⋮** menu has the safety number,
-   mute/unmute, clear‑messages, and remove‑connection (mutual on both phones).
-   Every conversation opens with a short loading state, then the newest **30**
-   messages with the view at the bottom – the same every time, no matter how
-   long the history is. **Load earlier messages** at the top adds 30 more per
-   tap (30 → 60 → 90 …) without the list jumping around. Decryption stays off
-   the main thread with an LRU plaintext cache so typing never fights the
-   crypto, and anything the relay collected while the phone was away is pulled
-   in quietly after the screen is already up. With no connection, a
-   message is written normally and waits with a clock icon (and a small
-   banner); it is encrypted and sent by itself the moment the relay is
-   reachable again.
+   the emoji picker and copy. The header **⋮** menu has mute/unmute,
+   clear‑messages, and remove‑connection (mutual on both phones). Every
+   conversation opens with a short loading state, then the newest **30**
+   messages are fetched from the cloud with the view at the bottom – the same
+   every time, no matter how long the history is. **Load earlier messages** at
+   the top adds 30 more per tap (30 → 60 → 90 …) without the list jumping
+   around. With no connection, a message is written normally and waits with a
+   clock icon (and a small banner); it is sent by itself the moment the relay
+   is reachable again.
 4. **Settings** is a small stack of pages, not one long list: a profile card at
-   the top, then **Encryption**, **Appearance**, **Chats**, **Notifications**,
-   **Privacy**, **Relay**, **Account** and **About**. Appearance holds the
-   theme (system/light/dark), **Colors** (Monochrome, WhatsApp, Ocean, Berry,
-   Sunset, Forest, Rose, Lavender, Sand, Midnight), text size (Small → Largest),
-   bubble shape (Rounded/Soft/Square), a live chat preview, **True black** and
+   the top, then **Appearance**, **Chats**, **Notifications**, **Privacy**,
+   **Relay**, **Account** and **About**. Appearance holds the
+   theme (system/light/dark), colours, text size (Small → Largest), bubble
+   shape (Rounded/Soft/Square), a live chat preview, **True black** and
    **Reduce motion**. Monochrome dark is graphite gray by default; turn on
    **True black** for an OLED canvas. WhatsApp is the familiar green‑and‑beige
    look with blue read ticks; the accent palettes recolour the bubbles, header,
    conversation wallpaper and the background of every screen. Chats holds
-   Enter‑to‑send, double‑tap‑to‑react and haptics; Privacy explains that there
-   is **no online status and no last seen** anywhere in the app. The sign‑in and
-   account pages are single screens – nothing scrolls unless the keyboard is up.
+   Enter‑to‑send, double‑tap‑to‑react and haptics; Privacy holds read receipts
+   and typing indicators, and explains that there is **no online status and no
+   last seen** anywhere in the app. Account holds password changes, the
+   delete‑all‑messages switch, sign‑out and account deletion.

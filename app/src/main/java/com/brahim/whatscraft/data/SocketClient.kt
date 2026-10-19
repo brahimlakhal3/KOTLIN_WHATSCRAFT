@@ -1,7 +1,6 @@
 package com.brahim.whatscraft.data
 
 import com.brahim.whatscraft.data.model.MessageBodyDto
-import com.brahim.whatscraft.data.model.EnvelopeDto
 import com.brahim.whatscraft.data.model.ServerFrame
 import com.brahim.whatscraft.data.model.WhatsCraftJson
 import kotlinx.coroutines.CompletableDeferred
@@ -19,8 +18,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
@@ -126,7 +123,6 @@ class SocketClient(
         id: String,
         conversationId: String,
         body: MessageBodyDto,
-        envelopes: List<EnvelopeDto>,
         clientId: String,
         kind: String = "text",
     ): Boolean = send(
@@ -137,14 +133,6 @@ class SocketClient(
             put("conversationId", conversationId)
             put("kind", kind)
             put("body", json.encodeToJsonElement(MessageBodyDto.serializer(), body))
-            put(
-                "envelopes",
-                buildJsonArray {
-                    envelopes.forEach { envelope ->
-                        add(json.encodeToJsonElement(EnvelopeDto.serializer(), envelope))
-                    }
-                },
-            )
         },
     )
 

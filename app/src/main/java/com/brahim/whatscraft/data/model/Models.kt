@@ -33,7 +33,7 @@ data class DeviceDto(
     val id: String,
     val name: String = "Phone",
     val platform: String = "android",
-    val identityKey: String,
+    val identityKey: String = "",
     val signingKey: String? = null,
 )
 
@@ -42,8 +42,6 @@ data class DeviceRegistration(
     val id: String,
     val name: String,
     val platform: String = "android",
-    val identityKey: String,
-    val signingKey: String,
 )
 
 @Serializable
@@ -166,17 +164,9 @@ data class ConversationDto(
 
 @Serializable
 data class MessageBodyDto(
-    val alg: String = "A256GCM",
-    val iv: String,
-    val ct: String,
-    val sig: String,
+    /** Plain text as stored in the cloud. Older ciphertext bodies have no text. */
+    val text: String? = null,
 )
-
-@Serializable
-data class WrappedKeyDto(val iv: String, val ct: String)
-
-@Serializable
-data class EnvelopeDto(val deviceId: String, val wrappedKey: WrappedKeyDto)
 
 @Serializable
 data class MessageDto(
@@ -186,10 +176,9 @@ data class MessageDto(
     val senderDeviceId: String? = null,
     val seq: Long = 0,
     val kind: String = "text",
-    val body: MessageBodyDto,
+    val body: MessageBodyDto = MessageBodyDto(),
     val createdAt: String,
     val editedAt: String? = null,
-    val envelopes: List<EnvelopeDto> = emptyList(),
 )
 
 @Serializable
@@ -203,39 +192,11 @@ data class SendMessageRequest(
     val id: String,
     val kind: String = "text",
     val body: MessageBodyDto,
-    val envelopes: List<EnvelopeDto>,
     val clientId: String? = null,
 )
 
 @Serializable
 data class SendMessageResponse(val message: MessageDto, val duplicate: Boolean = false)
-
-@Serializable
-data class KeysDeviceDto(
-    val id: String,
-    val identityKey: String,
-    val signingKey: String? = null,
-    val platform: String = "android",
-    val name: String = "Phone",
-)
-
-@Serializable
-data class KeysMemberDto(
-    val userId: String,
-    val username: String,
-    val displayName: String,
-    val shade: Int = 0,
-    val devices: List<KeysDeviceDto> = emptyList(),
-)
-
-@Serializable
-data class ConversationKeysDto(val members: List<KeysMemberDto> = emptyList())
-
-@Serializable
-data class ConversationLookupResponse(
-    val conversation: ConversationDto,
-    val members: List<KeysMemberDto> = emptyList(),
-)
 
 @Serializable
 data class OpenConversationRequest(val peerId: String)

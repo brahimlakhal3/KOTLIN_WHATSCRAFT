@@ -18,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DeleteSweep
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Vibration
@@ -56,9 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -81,80 +81,40 @@ import com.brahim.whatscraft.ui.theme.WhatscraftColors
 import com.brahim.whatscraft.ui.theme.bubbleShape
 import com.brahim.whatscraft.ui.theme.paletteSwatch
 import com.brahim.whatscraft.util.TimeFormat
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
-// -------------------------------------------------------------- encryption ---
+// ---------------------------------------------------------------- recovery ---
 
 @Composable
-internal fun EncryptionPage(
-    container: Container,
+internal fun RecoveryPage(
     onBack: () -> Unit,
     onRecovery: () -> Unit,
-    onResetKey: () -> Unit,
 ) {
-    val clipboard = LocalClipboardManager.current
-    var identity by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
-        identity = withContext(Dispatchers.IO) { container.repository.myIdentityKey() }
-    }
-
-    SettingsPageScaffold(title = "Encryption", onBack = onBack) {
+    SettingsPageScaffold(title = "Recovery", onBack = onBack) {
         item(key = "intro") {
             PageIntro(
-                title = "Your keys",
-                subtitle = "Made on this phone, sealed by the Keystore, and never sent in the clear.",
+                title = "Account recovery",
+                subtitle = "No email, no phone number. One code is all that stands between " +
+                    "you and a lost password.",
             )
         }
 
         item(key = "recovery") {
-            SettingsGroup("Account recovery") {
+            SettingsGroup("Recovery code") {
                 NavRow(
                     icon = Icons.Rounded.Key,
-                    title = "Recovery code",
-                    subtitle = "A fresh one-time code, if you lose this phone",
+                    title = "Get a new recovery code",
+                    subtitle = "Replaces the old one immediately",
                     onClick = onRecovery,
-                )
-            }
-        }
-
-        item(key = "device") {
-            SettingsGroup("This device") {
-                NavRow(
-                    icon = Icons.Rounded.VerifiedUser,
-                    title = "Copy this device's key",
-                    subtitle = "Compare it with a friend, in person",
-                    onClick = { clipboard.setText(AnnotatedString(identity)) },
-                )
-                RowDivider()
-                NavRow(
-                    icon = Icons.Rounded.Refresh,
-                    title = "Reset this device's key",
-                    subtitle = "Old messages stay, friends see a new safety number",
-                    onClick = onResetKey,
-                )
-            }
-        }
-
-        item(key = "key-preview") {
-            SettingsGroup("Fingerprint") {
-                Text(
-                    text = identity.chunked(4).take(18).joinToString(" "),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                 )
             }
         }
 
         item(key = "note") {
             NoteCard(
-                text = "Every message is sealed here before it leaves. The relay stores " +
-                    "ciphertext and cannot read a word - not even the subject line, because " +
-                    "there is none.",
-                icon = Icons.Rounded.Lock,
+                text = "Keep the code somewhere safe and offline. It is shown once, and it " +
+                    "is the only way back into the account if you forget your password.",
+                icon = Icons.Rounded.Key,
             )
         }
     }
@@ -207,7 +167,7 @@ internal fun AppearancePage(
         item(key = "palette-blurb") {
             NoteCard(
                 text = paletteBlurb(settings.palette),
-                icon = Icons.Rounded.Lock,
+                icon = Icons.Rounded.Palette,
             )
         }
 
@@ -473,10 +433,9 @@ internal fun NotificationsPage(
 
         item(key = "note") {
             NoteCard(
-                text = "The notification is posted by this phone when a sealed message arrives. " +
-                    "The relay never sees the text, and nothing is shown while you are reading " +
-                    "the same conversation.",
-                icon = Icons.Rounded.Lock,
+                text = "The notification is posted by this phone when a message arrives, and " +
+                    "nothing is shown while you are reading the same conversation.",
+                icon = Icons.Rounded.Notifications,
             )
         }
     }
@@ -531,9 +490,9 @@ internal fun PrivacyPage(
 
         item(key = "keys-note") {
             NoteCard(
-                text = "The relay can see that two accounts exchange sealed envelopes, and " +
-                    "nothing else. Contacts, message text and keys stay on your phone.",
-                icon = Icons.Rounded.Lock,
+                text = "Messages are stored on your relay so they can load on any device you " +
+                    "sign in to. The relay can read them; pick one you trust, or run your own.",
+                icon = Icons.Rounded.Cloud,
             )
         }
     }
@@ -560,7 +519,8 @@ internal fun RelayPage(
         item(key = "intro") {
             PageIntro(
                 title = "Relay",
-                subtitle = "The post office for sealed envelopes. It routes them, it cannot read them.",
+                subtitle = "The server that stores your chats. Everything you send lives there " +
+                    "in plain text, waiting for your other devices.",
             )
         }
 
@@ -719,11 +679,11 @@ internal fun AccountPage(
         }
 
         item(key = "data") {
-            SettingsGroup("This phone") {
+            SettingsGroup("Your messages") {
                 NavRow(
                     icon = Icons.Rounded.DeleteSweep,
                     title = "Delete all messages",
-                    subtitle = "Empties every conversation here; contacts and keys stay",
+                    subtitle = "Empties every chat for your account; contacts stay",
                     destructive = true,
                     onClick = onClearMessages,
                 )
@@ -735,14 +695,14 @@ internal fun AccountPage(
                 NavRow(
                     icon = Icons.Rounded.Logout,
                     title = "Sign out",
-                    subtitle = "Messages stay encrypted on this phone",
+                    subtitle = "Your chats stay safely in the cloud",
                     onClick = onSignOut,
                 )
                 RowDivider()
                 NavRow(
                     icon = Icons.Rounded.DeleteForever,
                     title = "Delete account",
-                    subtitle = "Removes the account and every key on this device",
+                    subtitle = "Removes the account and every message on the relay",
                     destructive = true,
                     onClick = onDeleteAccount,
                 )
@@ -751,10 +711,10 @@ internal fun AccountPage(
 
         item(key = "note") {
             NoteCard(
-                text = "Signing out forgets your tokens but keeps the encrypted history here. " +
-                    "Deleting the account wipes the keys, so the old messages on the relay " +
-                    "become permanently unreadable.",
-                icon = Icons.Rounded.Lock,
+                text = "Signing out forgets the tokens on this phone. Your chats remain in the " +
+                    "cloud and come back the next time you sign in. Deleting the account removes " +
+                    "them from the relay.",
+                icon = Icons.Rounded.Cloud,
             )
         }
     }
@@ -779,8 +739,8 @@ internal fun AboutPage(
         item(key = "principles") {
             SettingsGroup("What it does") {
                 AboutLine(
-                    title = "End-to-end encrypted",
-                    body = "Every message is sealed on this phone with keys that never leave it.",
+                    title = "Cloud history",
+                    body = "Messages are stored in your relay and load on every device you sign in to.",
                 )
                 RowDivider()
                 AboutLine(
@@ -789,8 +749,8 @@ internal fun AboutPage(
                 )
                 RowDivider()
                 AboutLine(
-                    title = "Ciphertext only",
-                    body = "The relay stores sealed envelopes, never words, names or media.",
+                    title = "Simple by design",
+                    body = "No keys to manage. Your account password protects the door.",
                 )
                 RowDivider()
                 AboutLine(
@@ -1015,8 +975,8 @@ internal fun DeleteAccountDialog(
         text = {
             Column {
                 Text(
-                    "This removes your account, your messages on the relay and every key on " +
-                        "this phone. It cannot be undone.",
+                    "This removes your account and every message on the relay. " +
+                        "It cannot be undone.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

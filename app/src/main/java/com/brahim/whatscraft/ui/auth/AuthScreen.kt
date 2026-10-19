@@ -29,9 +29,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Language
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -77,7 +77,7 @@ import com.brahim.whatscraft.data.model.LoginRequest
 import com.brahim.whatscraft.data.model.RecoverRequest
 import com.brahim.whatscraft.data.model.RegisterRequest
 import com.brahim.whatscraft.di.Container
-import com.brahim.whatscraft.ui.components.EncryptionNote
+import com.brahim.whatscraft.ui.components.CloudNote
 import kotlinx.coroutines.launch
 
 private enum class AuthMode(val label: String) {
@@ -170,9 +170,9 @@ fun AuthScreen(
 
                 Spacer(Modifier.weight(1f))
                 Spacer(Modifier.height(18.dp))
-                EncryptionNote(
+                CloudNote(
                     modifier = Modifier.fillMaxWidth(),
-                    text = "Your keys never leave this phone",
+                    text = "Chats load from your relay on every device",
                 )
                 Spacer(Modifier.height(14.dp))
             }
@@ -190,7 +190,7 @@ private fun BrandHeader(container: Container) {
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.Rounded.Lock,
+                imageVector = Icons.Rounded.Cloud,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.size(26.dp),
@@ -200,7 +200,7 @@ private fun BrandHeader(container: Container) {
         Text("Whatscraft", style = MaterialTheme.typography.displaySmall)
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "Text only, end-to-end encrypted, just your friends.",
+            text = "Text only, stored in your cloud, just your friends.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -753,13 +753,11 @@ private fun PrimaryButton(
 }
 
 private fun Container.deviceRegistration(): DeviceRegistration {
-    val identity = identityStore.load()
+    val device = deviceStore.load()
     return DeviceRegistration(
-        id = identity.deviceId,
-        name = identity.deviceName,
+        id = device.id,
+        name = device.name,
         platform = "android",
-        identityKey = identity.identityPublic,
-        signingKey = identity.signingPublic,
     )
 }
 

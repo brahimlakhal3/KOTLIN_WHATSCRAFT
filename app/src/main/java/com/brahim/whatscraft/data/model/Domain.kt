@@ -2,7 +2,7 @@ package com.brahim.whatscraft.data.model
 
 /** UI-facing models. The rest of the app never touches the wire or the database directly. */
 
-enum class MessageStatus { Sending, Queued, Sent, Read, Failed, Undecryptable }
+enum class MessageStatus { Sending, Queued, Sent, Read, Failed }
 
 data class ChatMessage(
     val id: String,
@@ -33,7 +33,6 @@ data class ChatSummary(
     val shade: Int,
     val unread: Int,
     val muted: Boolean,
-    val online: Boolean,
     val isGroup: Boolean,
     val peerId: String?,
     val lastMessageAt: Long,
@@ -49,12 +48,6 @@ data class Contact(
     val displayName: String,
     val about: String,
     val shade: Int,
-    val online: Boolean,
-    val lastSeen: Long?,
     val relationship: Relationship,
     val requestId: String?,
-    /** Sixty-digit fingerprint of this contact's identity key. */
-    val fingerprint: String?,
-    /** True when the contact's key material changed since we first saw it. */
-    val keyChanged: Boolean,
 )

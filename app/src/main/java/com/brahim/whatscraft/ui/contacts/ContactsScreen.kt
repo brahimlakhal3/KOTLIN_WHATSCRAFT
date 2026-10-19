@@ -1,9 +1,7 @@
 package com.brahim.whatscraft.ui.contacts
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,7 +20,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.PersonOutline
-import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,12 +41,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.shape.CircleShape
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.brahim.whatscraft.data.model.Contact
 import com.brahim.whatscraft.data.model.Relationship
@@ -77,7 +72,6 @@ fun ContactsScreen(
     var busy by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var safetyFor by remember { mutableStateOf<Contact?>(null) }
     var removeTarget by remember { mutableStateOf<Contact?>(null) }
 
     val friends = contacts.filter { it.relationship == Relationship.Friends }
@@ -215,18 +209,13 @@ fun ContactsScreen(
                 items(friends, key = { it.id }) { contact ->
                     ContactRow(
                         contact = contact,
-                        subtitle = when {
-                            contact.keyChanged -> "Security code changed - tap for details"
-                            contact.about.isNotBlank() -> contact.about
-                            else -> "@${contact.username}"
-                        },
+                        subtitle = if (contact.about.isNotBlank()) contact.about else "@${contact.username}",
                         onClick = {
                             scope.launch {
                                 runCatching { onOpenChat(repository.openConversation(contact.id)) }
                             }
                         },
                         onLongClick = { removeTarget = contact },
-                        onSafety = { safetyFor = contact },
                     )
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
@@ -246,7 +235,7 @@ fun ContactsScreen(
             text = {
                 Text(
                     "You and ${contact.displayName} will no longer be able to message each other. " +
-                        "Your existing messages stay on your phone.",
+                        "Your existing chat is removed for both of you.",
                 )
             },
             confirmButton = {
@@ -263,10 +252,6 @@ fun ContactsScreen(
                 TextButton(onClick = { removeTarget = null }) { Text("Keep") }
             },
         )
-    }
-
-    safetyFor?.let { contact ->
-        SafetyDialog(container = container, contact = contact, onDismiss = { safetyFor = null })
     }
 
     LaunchedEffect(Unit) { runCatching { repository.refreshContacts() } }
@@ -314,7 +299,6 @@ private fun ContactRow(
     subtitle: String,
     onClick: (() -> Unit)?,
     onLongClick: (() -> Unit)?,
-    onSafety: (() -> Unit)? = null,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -330,24 +314,13 @@ private fun ContactRow(
         )
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = contact.displayName.ifBlank { contact.username },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (contact.keyChanged) {
-                    Spacer(Modifier.width(6.dp))
-                    Box(
-                        Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.error),
-                    )
-                }
-            }
+            Text(
+                text = contact.displayName.ifBlank { contact.username },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
@@ -356,53 +329,8 @@ private fun ContactRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        if (onSafety != null) {
-            IconButton(onClick = onSafety) {
-                Icon(
-                    Icons.Rounded.VerifiedUser,
-                    contentDescription = "Safety number",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
         if (onLongClick != null) {
             TextButton(onClick = { onLongClick() }) { Text("Remove") }
         }
     }
-}
-
-@Composable
-private fun SafetyDialog(
-    container: Container,
-    contact: Contact,
-    onDismiss: () -> Unit,
-) {
-    var number by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(contact.id) {
-        number = runCatching { container.repository.safetyNumber(contact.id) }.getOrNull()
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Safety number") },
-        text = {
-            Column {
-                Text(
-                    text = "Compare these digits with " +
-                        "${contact.displayName.ifBlank { contact.username }} in person or over a " +
-                        "call you already trust.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = number ?: "Keys not downloaded yet - open a chat with them first.",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
 }
