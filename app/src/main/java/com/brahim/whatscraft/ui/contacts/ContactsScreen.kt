@@ -1,7 +1,6 @@
 package com.brahim.whatscraft.ui.contacts
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -15,11 +14,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.PersonOutline
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,8 +54,9 @@ import com.brahim.whatscraft.ui.components.SectionHeader
 import kotlinx.coroutines.launch
 
 /**
- * People: send a request by username, answer the ones you receive, and open a
- * chat with anyone you are connected to.
+ * People: the whole relay directory, filtered as you type. Anyone who is not
+ * connected yet gets an Invite button; requests waiting for you can be
+ * accepted right here, and existing connections open their chat.
  */
 @Composable
 fun ContactsScreen(
@@ -66,10 +66,13 @@ fun ContactsScreen(
 ) {
     val repository = container.repository
     val contacts by repository.contacts.collectAsStateWithLifecycle(initialValue = emptyList())
+    val people by repository.people.collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
 
-    var username by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var inviting by remember { mutableStateOf<String?>(null) }
+    var loadingPeople by remember { mutableStateOf(true) }
+    var peopleError by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var removeTarget by remember { mutableStateOf<Contact?>(null) }
@@ -77,23 +80,72 @@ fun ContactsScreen(
     val friends = contacts.filter { it.relationship == Relationship.Friends }
     val incoming = contacts.filter { it.relationship == Relationship.PendingIncoming }
     val outgoing = contacts.filter { it.relationship == Relationship.PendingOutgoing }
+    val directory = people.filter { it.relationship == Relationship.None }
 
-    fun add() {
-        val clean = username.trim().removePrefix("@").lowercase()
-        if (clean.isBlank() || busy) return
-        busy = true
-        error = null
+    val cleanQuery = query.trim().removePrefix("@").lowercase()
+    fun matches(person: Contact) =
+        cleanQuery.isBlank() ||
+            person.username.lowercase().contains(cleanQuery) ||
+            person.displayName.lowercase().contains(cleanQuery)
+
+    val searchResults = if (cleanQuery.isBlank()) {
+        emptyList()
+    } else {
+        // Directory rows come from the last fetch; live contact rows win so a
+        // request that just arrived cannot show up as "Invite" in results.
+        val merged = people.associateBy { it.id }.toMutableMap()
+        contacts.forEach { merged[it.id] = it }
+        merged.values.filter(::matches).sortedBy { it.username.lowercase() }
+    }
+
+    fun invite(person: Contact) {
+        if (inviting != null) return
+        inviting = person.username
         notice = null
+        error = null
         scope.launch {
             try {
-                repository.addContact(clean)
-                notice = "Request sent to @$clean"
-                username = ""
+                repository.addContact(person.username)
+                notice = "Invitation sent to @${person.username}"
+                runCatching { repository.refreshPeople() }
             } catch (failure: Exception) {
-                error = failure.message ?: "Could not send that request."
+                error = failure.message ?: "Could not send that invitation."
             } finally {
-                busy = false
+                inviting = null
             }
+        }
+    }
+
+    fun inviteUsername(username: String) {
+        if (inviting != null) return
+        inviting = username
+        notice = null
+        error = null
+        scope.launch {
+            try {
+                repository.addContact(username)
+                notice = "Invitation sent to @$username"
+                query = ""
+                runCatching { repository.refreshPeople() }
+            } catch (failure: Exception) {
+                error = failure.message ?: "Could not send that invitation."
+            } finally {
+                inviting = null
+            }
+        }
+    }
+
+    fun accept(contact: Contact) {
+        scope.launch {
+            runCatching { repository.acceptContact(contact.requestId.orEmpty()) }
+            runCatching { repository.refreshPeople() }
+        }
+    }
+
+    fun decline(contact: Contact) {
+        scope.launch {
+            runCatching { repository.declineContact(contact.requestId.orEmpty()) }
+            runCatching { repository.refreshPeople() }
         }
     }
 
@@ -112,33 +164,27 @@ fun ContactsScreen(
                     Text("Connections", style = MaterialTheme.typography.headlineMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = "Find each other by username. Both sides have to accept before " +
-                            "a chat exists.",
+                        text = "Everyone on this app is listed below. Search for a name, then " +
+                            "send an invitation. Both sides have to accept before a chat exists.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(18.dp))
                     OutlinedTextField(
-                        value = username,
-                        onValueChange = { username = it.filter { char -> !char.isWhitespace() } },
-                        label = { Text("Add by username") },
-                        leadingIcon = { Icon(Icons.Rounded.PersonAdd, contentDescription = null) },
-                        singleLine = true,
-                        shape = MaterialTheme.shapes.small,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = { Text("Search people") },
+                        leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                         trailingIcon = {
-                            if (busy) {
-                                CircularProgressIndicator(
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            } else {
-                                IconButton(onClick = ::add, enabled = username.isNotBlank()) {
-                                    Icon(Icons.Rounded.Check, contentDescription = "Send request")
+                            if (query.isNotEmpty()) {
+                                IconButton(onClick = { query = "" }) {
+                                    Icon(Icons.Rounded.Close, contentDescription = "Clear search")
                                 }
                             }
                         },
+                        singleLine = true,
+                        shape = MaterialTheme.shapes.small,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     notice?.let {
@@ -169,58 +215,189 @@ fun ContactsScreen(
                 }
             }
 
-            if (incoming.isNotEmpty()) {
-                item(key = "incoming-header") { SectionHeader("Waiting for you") }
-                items(incoming, key = { "in-${it.id}" }) { contact ->
-                    RequestRow(
-                        contact = contact,
-                        onAccept = { scope.launch { runCatching { repository.acceptContact(contact.requestId.orEmpty()) } } },
-                        onDecline = { scope.launch { runCatching { repository.declineContact(contact.requestId.orEmpty()) } } },
-                    )
+            if (cleanQuery.isNotBlank()) {
+                item(key = "results-header") { SectionHeader("Results") }
+
+                if (loadingPeople && searchResults.isEmpty()) {
+                    item(key = "results-loading") { LoadingPeopleRow() }
+                } else if (searchResults.isEmpty()) {
+                    val canInviteByUsername = cleanQuery.matches(Regex("^[a-z0-9][a-z0-9_.]{2,23}$"))
+                    if (canInviteByUsername) {
+                        item(key = "invite-username") {
+                            PersonRow(
+                                person = Contact(
+                                    id = cleanQuery,
+                                    username = cleanQuery,
+                                    displayName = cleanQuery,
+                                    about = "",
+                                    shade = 0,
+                                    relationship = Relationship.None,
+                                    requestId = null,
+                                ),
+                                subtitle = "Not in the directory yet - send a direct invitation",
+                                busy = inviting != null,
+                                onInvite = { inviteUsername(cleanQuery) },
+                            )
+                        }
+                    } else {
+                        item(key = "results-empty") {
+                            EmptyState(
+                                icon = Icons.Rounded.PersonOutline,
+                                title = "No one found",
+                                body = "Try another name or @username.",
+                            )
+                        }
+                    }
                 }
-            }
 
-            if (outgoing.isNotEmpty()) {
-                item(key = "outgoing-header") { SectionHeader("Sent") }
-                items(outgoing, key = { "out-${it.id}" }) { contact ->
-                    ContactRow(
-                        contact = contact,
-                        subtitle = "Waiting for them to accept",
-                        onClick = null,
-                        onLongClick = null,
-                    )
-                }
-            }
+                items(searchResults, key = { "result-${it.id}" }) { person ->
+                    when (person.relationship) {
+                        Relationship.Friends -> ContactRow(
+                            contact = person,
+                            subtitle = if (person.about.isNotBlank()) person.about else "@${person.username}",
+                            onClick = {
+                                scope.launch {
+                                    runCatching { onOpenChat(repository.openConversation(person.id)) }
+                                }
+                            },
+                            onLongClick = null,
+                        )
 
-            item(key = "friends-header") {
-                SectionHeader(if (friends.isEmpty()) "Your connections" else "Your connections (${friends.size})")
-            }
+                        Relationship.PendingIncoming -> RequestRow(
+                            contact = person,
+                            onAccept = { accept(person) },
+                            onDecline = { decline(person) },
+                        )
 
-            if (friends.isEmpty()) {
-                item(key = "friends-empty") {
-                    EmptyState(
-                        icon = Icons.Rounded.PersonOutline,
-                        title = "Nobody here yet",
-                        body = "Ask a friend for their username, or share yours: " +
-                            "@${container.sessions.current?.username ?: "you"}",
-                    )
+                        Relationship.PendingOutgoing -> ContactRow(
+                            contact = person,
+                            subtitle = "Waiting for them to accept",
+                            onClick = null,
+                            onLongClick = null,
+                        )
+
+                        else -> PersonRow(
+                            person = person,
+                            subtitle = if (person.about.isNotBlank()) {
+                                "@${person.username} · ${person.about}"
+                            } else {
+                                "@${person.username}"
+                            },
+                            busy = inviting == person.username,
+                            onInvite = { invite(person) },
+                        )
+                    }
                 }
             } else {
-                items(friends, key = { it.id }) { contact ->
-                    ContactRow(
-                        contact = contact,
-                        subtitle = if (contact.about.isNotBlank()) contact.about else "@${contact.username}",
-                        onClick = {
-                            scope.launch {
-                                runCatching { onOpenChat(repository.openConversation(contact.id)) }
+                if (incoming.isNotEmpty()) {
+                    item(key = "incoming-header") { SectionHeader("Waiting for you") }
+                    items(incoming, key = { "in-${it.id}" }) { contact ->
+                        RequestRow(
+                            contact = contact,
+                            onAccept = { accept(contact) },
+                            onDecline = { decline(contact) },
+                        )
+                    }
+                }
+
+                if (outgoing.isNotEmpty()) {
+                    item(key = "outgoing-header") { SectionHeader("Sent") }
+                    items(outgoing, key = { "out-${it.id}" }) { contact ->
+                        ContactRow(
+                            contact = contact,
+                            subtitle = "Waiting for them to accept",
+                            onClick = null,
+                            onLongClick = null,
+                        )
+                    }
+                }
+
+                item(key = "friends-header") {
+                    SectionHeader(if (friends.isEmpty()) "Your connections" else "Your connections (${friends.size})")
+                }
+
+                if (friends.isEmpty()) {
+                    item(key = "friends-empty") {
+                        EmptyState(
+                            icon = Icons.Rounded.PersonOutline,
+                            title = "Nobody here yet",
+                            body = "Invite someone from the directory below, or share your username: " +
+                                "@${container.sessions.current?.username ?: "you"}",
+                        )
+                    }
+                } else {
+                    items(friends, key = { it.id }) { contact ->
+                        ContactRow(
+                            contact = contact,
+                            subtitle = if (contact.about.isNotBlank()) contact.about else "@${contact.username}",
+                            onClick = {
+                                scope.launch {
+                                    runCatching { onOpenChat(repository.openConversation(contact.id)) }
+                                }
+                            },
+                            onLongClick = { removeTarget = contact },
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            modifier = Modifier.padding(start = 88.dp),
+                        )
+                    }
+                }
+
+                item(key = "directory-header") { SectionHeader("Everyone on Whatscraft") }
+
+                if (loadingPeople) {
+                    item(key = "directory-loading") { LoadingPeopleRow() }
+                } else if (peopleError != null) {
+                    item(key = "directory-error") {
+                        Column(Modifier.padding(horizontal = 20.dp)) {
+                            Text(
+                                text = peopleError.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        loadingPeople = true
+                                        peopleError = null
+                                        runCatching { repository.refreshPeople() }
+                                            .onFailure { peopleError = it.message ?: "Could not load people." }
+                                        loadingPeople = false
+                                    }
+                                },
+                            ) {
+                                Text("Try again")
                             }
-                        },
-                        onLongClick = { removeTarget = contact },
-                    )
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        modifier = Modifier.padding(start = 88.dp),
-                    )
+                        }
+                    }
+                } else if (directory.isEmpty()) {
+                    item(key = "directory-empty") {
+                        EmptyState(
+                            icon = Icons.Rounded.PersonAdd,
+                            title = "No new people right now",
+                            body = "Everyone here is already in your connections, or you are the " +
+                                "first one. Share @${container.sessions.current?.username ?: "your username"}.",
+                        )
+                    }
+                } else {
+                    items(directory, key = { "person-${it.id}" }) { person ->
+                        PersonRow(
+                            person = person,
+                            subtitle = if (person.about.isNotBlank()) {
+                                "@${person.username} · ${person.about}"
+                            } else {
+                                "@${person.username}"
+                            },
+                            busy = inviting == person.username,
+                            onInvite = { invite(person) },
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            modifier = Modifier.padding(start = 88.dp),
+                        )
+                    }
                 }
             }
 
@@ -242,7 +419,10 @@ fun ContactsScreen(
                 TextButton(
                     onClick = {
                         removeTarget = null
-                        scope.launch { runCatching { repository.removeContact(contact.id) } }
+                        scope.launch {
+                            runCatching { repository.removeContact(contact.id) }
+                            runCatching { repository.refreshPeople() }
+                        }
                     },
                 ) {
                     Text("Remove", color = MaterialTheme.colorScheme.error)
@@ -254,7 +434,86 @@ fun ContactsScreen(
         )
     }
 
-    LaunchedEffect(Unit) { runCatching { repository.refreshContacts() } }
+    LaunchedEffect(Unit) {
+        runCatching { repository.refreshContacts() }
+        loadingPeople = true
+        peopleError = null
+        try {
+            repository.refreshPeople()
+        } catch (failure: Exception) {
+            peopleError = failure.message ?: "Could not load people."
+        } finally {
+            loadingPeople = false
+        }
+    }
+}
+
+@Composable
+private fun LoadingPeopleRow() {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+    ) {
+        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "Looking for people...",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun PersonRow(
+    person: Contact,
+    subtitle: String,
+    busy: Boolean,
+    onInvite: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+    ) {
+        Avatar(
+            name = person.displayName.ifBlank { person.username },
+            shade = person.shade,
+            size = 52.dp,
+        )
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = person.displayName.ifBlank { person.username },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        OutlinedButton(
+            onClick = onInvite,
+            enabled = !busy,
+            shape = MaterialTheme.shapes.small,
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp),
+                )
+            } else {
+                Text("Invite")
+            }
+        }
+    }
 }
 
 @Composable

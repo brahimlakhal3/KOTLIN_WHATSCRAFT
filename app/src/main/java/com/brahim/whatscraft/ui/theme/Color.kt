@@ -56,7 +56,6 @@ val WaInk = Color(0xFF111B21)
 val WaBubbleInLight = Color(0xFFFFFFFF)
 val WaBubbleOutLight = Color(0xFFDCF8C6)
 val WaTextOnOutLight = Color(0xFF111B21)
-val WaTickLight = Color(0xFF34B7F1)
 
 val WaCanvasDark = Color(0xFF0B141A)
 val WaSurfaceDark = Color(0xFF111B21)

@@ -69,8 +69,6 @@ data class RegisterRequest(
     val displayName: String,
     val password: String,
     val device: DeviceRegistration,
-    /** Only needed when the relay is invite-only (REGISTER_CODE set server side). */
-    val registerCode: String? = null,
 )
 
 @Serializable
@@ -139,6 +137,17 @@ data class UserLookupDto(
     val devices: List<DeviceDto> = emptyList(),
 )
 
+@Serializable
+data class DirectoryPersonDto(
+    val user: UserDto,
+    /** friends | pending_outgoing | pending_incoming | none */
+    val relationship: String = "none",
+    val requestId: String? = null,
+)
+
+@Serializable
+data class PeopleEnvelope(val people: List<DirectoryPersonDto> = emptyList())
+
 // ------------------------------------------------------------ conversations --
 
 @Serializable
@@ -149,8 +158,6 @@ data class ConversationDto(
     val createdBy: String? = null,
     val createdAt: String,
     val lastReadSeq: Long = 0,
-    /** How far the other member has shared their read receipts. */
-    val peerLastReadSeq: Long = 0,
     val unread: Int = 0,
     val muted: Boolean = false,
     val members: List<UserDto> = emptyList(),
@@ -204,7 +211,7 @@ data class SendMessageResponse(val message: MessageDto, val duplicate: Boolean =
 data class OpenConversationRequest(val peerId: String)
 
 @Serializable
-data class ReadRequest(val seq: Long, val receipt: Boolean = true)
+data class ReadRequest(val seq: Long)
 
 @Serializable
 data class MuteRequest(val muted: Boolean)

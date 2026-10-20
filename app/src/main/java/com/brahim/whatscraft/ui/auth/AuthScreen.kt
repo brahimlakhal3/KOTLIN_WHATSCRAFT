@@ -284,7 +284,6 @@ private fun RegisterForm(
     val scope = rememberCoroutineScope()
     var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
-    var friendsCode by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -311,7 +310,6 @@ private fun RegisterForm(
                         displayName = displayName.trim().ifBlank { clean },
                         password = password,
                         device = container.deviceRegistration(),
-                        registerCode = friendsCode.trim().ifBlank { null },
                     ),
                 )
                 onCreated(auth)
@@ -338,14 +336,6 @@ private fun RegisterForm(
             onValueChange = { displayName = it },
             label = "Display name",
             placeholder = "optional",
-            imeAction = ImeAction.Next,
-        )
-        Spacer(Modifier.height(12.dp))
-        AuthField(
-            value = friendsCode,
-            onValueChange = { friendsCode = it.filter { char -> !char.isWhitespace() } },
-            label = "Friends code",
-            placeholder = "only if invite-only",
             imeAction = ImeAction.Next,
         )
         Spacer(Modifier.height(12.dp))

@@ -459,16 +459,8 @@ internal fun PrivacyPage(
             )
         }
 
-        item(key = "receipts") {
+        item(key = "chat") {
             SettingsGroup("Inside a chat") {
-                SwitchRow(
-                    icon = Icons.Rounded.VerifiedUser,
-                    title = "Read receipts",
-                    subtitle = "Share when you have read a message",
-                    checked = settings.readReceipts,
-                    onChange = { scope.launch { container.settings.setReadReceipts(it) } },
-                )
-                RowDivider()
                 SwitchRow(
                     icon = Icons.Rounded.Edit,
                     title = "Typing indicator",

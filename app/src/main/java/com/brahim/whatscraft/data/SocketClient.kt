@@ -144,14 +144,6 @@ class SocketClient(
         },
     )
 
-    fun sendRead(conversationId: String, seq: Long): Boolean = send(
-        buildJsonObject {
-            put("t", "read")
-            put("conversationId", conversationId)
-            put("seq", seq)
-        },
-    )
-
     fun ping(): Boolean = send(buildJsonObject { put("t", "ping") })
 
     fun send(frame: kotlinx.serialization.json.JsonObject): Boolean =

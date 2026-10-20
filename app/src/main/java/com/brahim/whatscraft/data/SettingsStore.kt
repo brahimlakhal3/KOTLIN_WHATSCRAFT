@@ -97,7 +97,6 @@ data class AppSettings(
     val notificationsEnabled: Boolean = true,
     /** Keep a foreground service connected so messages arrive with the app closed. */
     val backgroundRelay: Boolean = true,
-    val readReceipts: Boolean = true,
     val typingIndicators: Boolean = true,
     val enterToSend: Boolean = true,
     /** Off by default: message text stays off the lock screen. */
@@ -142,7 +141,6 @@ class SettingsStore(context: Context) {
                     reduceMotion = prefs[KEY_REDUCE_MOTION] ?: false,
                     notificationsEnabled = prefs[KEY_NOTIFICATIONS] ?: true,
                     backgroundRelay = prefs[KEY_BACKGROUND_RELAY] ?: true,
-                    readReceipts = prefs[KEY_READ_RECEIPTS] ?: true,
                     typingIndicators = prefs[KEY_TYPING] ?: true,
                     enterToSend = prefs[KEY_ENTER_TO_SEND] ?: true,
                     showMessagePreview = prefs[KEY_PREVIEW] ?: false,
@@ -175,8 +173,6 @@ class SettingsStore(context: Context) {
     suspend fun setNotifications(enabled: Boolean) = put(KEY_NOTIFICATIONS, enabled)
 
     suspend fun setBackgroundRelay(enabled: Boolean) = put(KEY_BACKGROUND_RELAY, enabled)
-
-    suspend fun setReadReceipts(enabled: Boolean) = put(KEY_READ_RECEIPTS, enabled)
 
     suspend fun setTypingIndicators(enabled: Boolean) = put(KEY_TYPING, enabled)
 
@@ -223,7 +219,6 @@ class SettingsStore(context: Context) {
         val KEY_REDUCE_MOTION = booleanPreferencesKey("reduce_motion")
         val KEY_NOTIFICATIONS = booleanPreferencesKey("notifications")
         val KEY_BACKGROUND_RELAY = booleanPreferencesKey("background_relay")
-        val KEY_READ_RECEIPTS = booleanPreferencesKey("read_receipts")
         val KEY_TYPING = booleanPreferencesKey("typing_indicators")
         val KEY_ENTER_TO_SEND = booleanPreferencesKey("enter_to_send")
         val KEY_PREVIEW = booleanPreferencesKey("message_preview")

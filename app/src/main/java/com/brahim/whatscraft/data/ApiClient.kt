@@ -6,6 +6,7 @@ import com.brahim.whatscraft.data.model.AuthResponse
 import com.brahim.whatscraft.data.model.ChangePasswordRequest
 import com.brahim.whatscraft.data.model.ConversationDto
 import com.brahim.whatscraft.data.model.DeleteAccountRequest
+import com.brahim.whatscraft.data.model.DirectoryPersonDto
 import com.brahim.whatscraft.data.model.DeviceDto
 import com.brahim.whatscraft.data.model.DeviceRegistration
 import com.brahim.whatscraft.data.model.FriendGraphDto
@@ -17,6 +18,7 @@ import com.brahim.whatscraft.data.model.MessagesPageDto
 import com.brahim.whatscraft.data.model.MuteRequest
 import com.brahim.whatscraft.data.model.OpenConversationRequest
 import com.brahim.whatscraft.data.model.PatchMeRequest
+import com.brahim.whatscraft.data.model.PeopleEnvelope
 import com.brahim.whatscraft.data.model.PushTokenRequest
 import com.brahim.whatscraft.data.model.ReadRequest
 import com.brahim.whatscraft.data.model.RecoverRequest
@@ -151,6 +153,10 @@ class ApiClient(
 
     suspend fun friends(): FriendGraphDto = execute("GET", "/v1/friends", null, authenticated = true)
 
+    /** Everyone on the relay, for the People directory. */
+    suspend fun people(): List<DirectoryPersonDto> =
+        execute<PeopleEnvelope>("GET", "/v1/people", null, authenticated = true).people
+
     suspend fun sendFriendRequest(username: String): FriendRequestResponse =
         execute(
             "POST",
@@ -199,11 +205,11 @@ class ApiClient(
             authenticated = true,
         )
 
-    suspend fun markRead(conversationId: String, seq: Long, receipt: Boolean = true) {
+    suspend fun markRead(conversationId: String, seq: Long) {
         execute<Unit>(
             "POST",
             "/v1/conversations/$conversationId/read",
-            encode(ReadRequest.serializer(), ReadRequest(seq, receipt)),
+            encode(ReadRequest.serializer(), ReadRequest(seq)),
             authenticated = true,
         )
     }

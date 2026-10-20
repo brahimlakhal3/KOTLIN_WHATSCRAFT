@@ -397,7 +397,7 @@ private fun SettingsHome(
                 NavRow(
                     icon = Icons.Rounded.VerifiedUser,
                     title = "Privacy",
-                    subtitle = "Read receipts and typing indicator",
+                    subtitle = "Typing indicator",
                     onClick = { onOpen(SettingsPage.Privacy) },
                 )
             }

@@ -460,13 +460,6 @@ object WhatscraftColors {
             else -> MaterialTheme.colorScheme.onBackground
         }
 
-    /** Read-receipt tick: WhatsApp blue, or the quiet ink of monochrome. */
-    val tickRead: Color
-        @Composable get() = if (palette == Palette.WhatsApp) {
-            if (dark) WaTickDark else WaTickLight
-        } else {
-            onBubbleOutgoing.copy(alpha = 0.7f)
-        }
 }
 
 @Composable

@@ -115,8 +115,7 @@ The relay repository ships a `render.yaml`, so Render builds it directly.
 2. Push the relay repo to GitHub, then in the Render dashboard:
    **New +** → **Blueprint** → pick the repo → **Apply**.
 3. When prompted, paste the Neon string as `DATABASE_URL`. Render generates
-   `JWT_SECRET` automatically. Set `REGISTER_CODE` if you want the relay to be
-   invite‑only (recommended for anything public).
+   `JWT_SECRET` automatically.
 4. After the first deploy, the relay answers at
    `https://<service-name>.onrender.com` – check `/v1/health`.
 
@@ -204,11 +203,11 @@ same Wi‑Fi.
 ## Using the app
 
 1. Install the APK, open it, pick your relay if the default is not yours
-   (**Server**), then choose a username (3–24 chars: `a-z 0-9 _ .`), a
-   password (8+ chars) and the **friends code** if the relay is invite‑only.
-   You get a **recovery code** – write it down; it is the only way to reset
-   the password.
-2. Add a friend by username; they accept the request under **People**.
+   (**Server**), then choose a username (3–24 chars: `a-z 0-9 _ .`) and a
+   password (8+ chars). You get a **recovery code** – write it down; it is the
+   only way to reset the password.
+2. Open **People** to see everyone on the relay. Search for a name or username
+   if you want, then send an invitation; they accept it under **People**.
 3. Start chatting. New messages pop in with a short entrance animation; the
    clock sits at the end of the last line like WhatsApp. **Double‑tap** a
    message to send ❤️ (double‑tap again to take it back) or **long‑press** for

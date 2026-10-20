@@ -43,7 +43,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Cloud
-import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.MoreVert
@@ -81,6 +80,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -125,8 +125,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * One conversation: the thread, the day separators, the typing signal, read
- * receipts, retry-on-tap for failed sends, and a composer that never blocks.
+ * One conversation: the thread, the day separators, the typing signal, unread
+ * bookkeeping, retry-on-tap for failed sends, and a composer that never blocks.
  *
  * Performance notes: the draft text lives inside [Composer] and the thread is
  * built once per message-list change, so typing never re-walks the history.
@@ -239,11 +239,10 @@ fun ChatScreen(
         }
     }
 
-    // Opening the keyboard keeps the newest messages in view only when the
-    // reader was already at the bottom. If they scrolled up to read older
-    // messages, the thread must stay where it is. The anchor ignores the
-    // viewport shrink itself and only changes on real scrolls (or while the
-    // keyboard is down), so hiding and reopening it does the right thing.
+    // Opening the keyboard brings the newest messages back into view after the
+    // keyboard has settled (0.3s), with a deliberately slow glide instead of
+    // an instant jump. The anchor still tracks real scrolling so a growing
+    // composer never yanks someone who has scrolled up while writing.
     val density = LocalDensity.current
     val imeOpen = WindowInsets.ime.getBottom(density) > 0
     var anchoredToBottom by remember(conversationId) { mutableStateOf(true) }
@@ -254,8 +253,15 @@ fun ChatScreen(
             }
     }
     LaunchedEffect(imeOpen) {
-        if (!imeOpen || thread.isEmpty() || !anchoredToBottom) return@LaunchedEffect
-        runCatching { listState.animateScrollToItem(lastScrollIndex(thread.size, atStart)) }
+        if (!imeOpen || thread.isEmpty()) return@LaunchedEffect
+        delay(300)
+        val step = with(density) { 10.dp.toPx() }
+        listState.scroll {
+            while (listState.canScrollForward) {
+                scrollBy(step)
+                withFrameNanos { }
+            }
+        }
     }
 
     // The pop-in lasts a moment; after that the bubble is just a bubble again.
@@ -890,7 +896,6 @@ private fun MessageBubble(
                                 MessageStatusIcon(
                                     status = message.status,
                                     color = bubbleSubtitleColor(message),
-                                    readColor = WhatscraftColors.tickRead,
                                 )
                             }
                         }
@@ -987,7 +992,7 @@ private fun bubbleSubtitleColor(message: ChatMessage): Color = when {
 }
 
 @Composable
-private fun MessageStatusIcon(status: MessageStatus, color: Color, readColor: Color) {
+private fun MessageStatusIcon(status: MessageStatus, color: Color) {
     when (status) {
         MessageStatus.Sending -> Icon(
             Icons.Rounded.Schedule,
@@ -1007,13 +1012,6 @@ private fun MessageStatusIcon(status: MessageStatus, color: Color, readColor: Co
             Icons.Rounded.Check,
             contentDescription = "Sent",
             tint = color,
-            modifier = Modifier.size(13.dp),
-        )
-
-        MessageStatus.Read -> Icon(
-            Icons.Rounded.DoneAll,
-            contentDescription = "Read",
-            tint = readColor,
             modifier = Modifier.size(13.dp),
         )
 

@@ -8,6 +8,7 @@ import com.brahim.whatscraft.data.model.ChatSummary
 import com.brahim.whatscraft.data.model.Contact
 import com.brahim.whatscraft.data.model.ConversationDto
 import com.brahim.whatscraft.data.model.DeviceRegistration
+import com.brahim.whatscraft.data.model.DirectoryPersonDto
 import com.brahim.whatscraft.data.model.FriendDto
 import com.brahim.whatscraft.data.model.MessageBodyDto
 import com.brahim.whatscraft.data.model.MessageDto
@@ -117,6 +118,10 @@ class ChatRepository(
         contactsDao.observeAll()
             .map { rows -> rows.map(::toContact) }
             .flowOn(Dispatchers.Default)
+
+    /** Everyone on the relay, loaded when the People screen opens. */
+    private val _people = MutableStateFlow<List<Contact>>(emptyList())
+    val people: StateFlow<List<Contact>> = _people.asStateFlow()
 
     val conversations: Flow<List<ChatSummary>> =
         conversationState
@@ -276,6 +281,13 @@ class ChatRepository(
 
     // -------------------------------------------------------------- friends --
 
+    /** Loads the whole directory; the screen filters it locally as you type. */
+    suspend fun refreshPeople() {
+        _people.value = api.people().map { person ->
+            person.toContact()
+        }
+    }
+
     suspend fun refreshContacts() {
         val graph = api.friends()
         val now = IsoTime.now()
@@ -374,11 +386,6 @@ class ChatRepository(
             val keptTyping = state.typing.filterKeys { merged.containsKey(it) }
             state.copy(dtos = merged, typing = keptTyping)
         }
-        // A refresh can carry a newer peer receipt watermark (for example after
-        // the phone was offline), so repaint ticks that were already loaded.
-        conversationState.value.dtos.values.forEach { dto ->
-            applyPeerRead(dto.id, dto.peerLastReadSeq)
-        }
     }
 
     suspend fun openConversation(peerId: String): String {
@@ -411,11 +418,9 @@ class ChatRepository(
         notifier.cancelForConversation(conversationId)
         if (alreadyRead) return
 
-        val shareReceipt = settings.current.readReceipts
-        if (shareReceipt) socket.sendRead(conversationId, newest)
-        // Always advance the server watermark: unread counts depend on it even
-        // when this person does not share read receipts with the other side.
-        runCatching { api.markRead(conversationId, newest, receipt = shareReceipt) }
+        // Only the unread watermark moves; the relay never tells the other
+        // side which message was read.
+        runCatching { api.markRead(conversationId, newest) }
     }
 
     fun setActiveConversation(conversationId: String?) {
@@ -699,10 +704,9 @@ class ChatRepository(
     private fun confirmSent(conversationId: String, messageId: String, seq: Long, createdAt: String) {
         val existing = findMessage(messageId) ?: return
         val whenSent = IsoTime.parse(createdAt).takeIf { it > 0 } ?: existing.createdAt
-        val peerRead = conversationState.value.dtos[conversationId]?.peerLastReadSeq ?: 0L
         val confirmed = existing.copy(
             seq = seq,
-            status = if (seq in 1..peerRead) MessageStatus.Read else MessageStatus.Sent,
+            status = MessageStatus.Sent,
             createdAt = whenSent,
         )
         updateMessage(messageId) { confirmed }
@@ -792,21 +796,7 @@ class ChatRepository(
                 publishTyping()
             }
 
-            is ServerFrame.Read -> {
-                val me = sessions.current?.userId
-                if (frame.userId != me) {
-                    conversationState.update { state ->
-                        val dto = state.dtos[frame.conversationId] ?: return@update state
-                        if (dto.peerLastReadSeq >= frame.seq) return@update state
-                        state.copy(
-                            dtos = state.dtos + (
-                                frame.conversationId to dto.copy(peerLastReadSeq = frame.seq)
-                                ),
-                        )
-                    }
-                    applyPeerRead(frame.conversationId, frame.seq)
-                }
-            }
+            is ServerFrame.Read -> Unit
 
             is ServerFrame.Presence -> Unit
 
@@ -1031,44 +1021,10 @@ class ChatRepository(
         conversationState.update { state ->
             state.copy(dtos = state.dtos + (dto.id to dto))
         }
-        applyPeerRead(dto.id, dto.peerLastReadSeq)
     }
 
     private fun putMessages(conversationId: String, rows: List<ChatMessage>) {
-        // History rows arrive as "sent"; the peer's receipt watermark tells us
-        // which of them were already read before this phone was opened.
-        val peerRead = conversationState.value.dtos[conversationId]?.peerLastReadSeq ?: 0L
-        val adjusted = if (peerRead > 0) {
-            rows.map { row ->
-                if (row.mine && row.status == MessageStatus.Sent && row.seq in 1..peerRead) {
-                    row.copy(status = MessageStatus.Read)
-                } else {
-                    row
-                }
-            }
-        } else {
-            rows
-        }
-        messageState.update { it + (conversationId to sortMessages(adjusted)) }
-    }
-
-    /**
-     * Upgrades my sent bubbles to "read" once the other person has shared a
-     * receipt watermark. Pending, queued and failed bubbles are untouched.
-     */
-    private fun applyPeerRead(conversationId: String, peerReadSeq: Long) {
-        if (peerReadSeq <= 0) return
-        messageState.update { state ->
-            val rows = state[conversationId] ?: return@update state
-            val updated = rows.map { row ->
-                if (row.mine && row.status == MessageStatus.Sent && row.seq in 1..peerReadSeq) {
-                    row.copy(status = MessageStatus.Read)
-                } else {
-                    row
-                }
-            }
-            if (updated == rows) state else state + (conversationId to updated)
-        }
+        messageState.update { it + (conversationId to sortMessages(rows)) }
     }
 
     private fun addMessage(message: ChatMessage) {
@@ -1122,6 +1078,21 @@ class ChatRepository(
         shade = row.shade,
         relationship = Relationship.entries.firstOrNull { it.name == row.relationship } ?: Relationship.None,
         requestId = row.requestId,
+    )
+
+    private fun DirectoryPersonDto.toContact() = Contact(
+        id = user.id,
+        username = user.username,
+        displayName = user.displayName,
+        about = user.about,
+        shade = user.shade,
+        relationship = when (relationship) {
+            "friends" -> Relationship.Friends
+            "pending_outgoing" -> Relationship.PendingOutgoing
+            "pending_incoming" -> Relationship.PendingIncoming
+            else -> Relationship.None
+        },
+        requestId = requestId,
     )
 
     private companion object {

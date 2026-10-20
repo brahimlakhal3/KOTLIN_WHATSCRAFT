@@ -2,7 +2,7 @@ package com.brahim.whatscraft.data.model
 
 /** UI-facing models. The rest of the app never touches the wire or the database directly. */
 
-enum class MessageStatus { Sending, Queued, Sent, Read, Failed }
+enum class MessageStatus { Sending, Queued, Sent, Failed }
 
 data class ChatMessage(
     val id: String,

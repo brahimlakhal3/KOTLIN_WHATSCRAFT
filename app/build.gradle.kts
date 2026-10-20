@@ -17,8 +17,8 @@ android {
         applicationId = "com.brahim.whatscraft"
         minSdk = 24
         targetSdk = 37
-        versionCode = 4
-        versionName = "2.1"
+        versionCode = 5
+        versionName = "2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
