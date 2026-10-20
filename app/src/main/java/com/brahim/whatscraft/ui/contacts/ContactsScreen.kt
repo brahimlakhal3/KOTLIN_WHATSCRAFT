@@ -221,7 +221,10 @@ fun ContactsScreen(
                 if (loadingPeople && searchResults.isEmpty()) {
                     item(key = "results-loading") { LoadingPeopleRow() }
                 } else if (searchResults.isEmpty()) {
-                    val canInviteByUsername = cleanQuery.matches(Regex("^[a-z0-9][a-z0-9_.]{2,23}$"))
+                    val meUsername = container.sessions.current?.username.orEmpty()
+                    val canInviteByUsername =
+                        cleanQuery.matches(Regex("^[a-z0-9][a-z0-9_.]{2,23}$")) &&
+                            !cleanQuery.equals(meUsername, ignoreCase = true)
                     if (canInviteByUsername) {
                         item(key = "invite-username") {
                             PersonRow(
