@@ -38,7 +38,7 @@ message rows to its database.
 
 This repository is the **Android app**. The relay (Bun + Postgres) lives in
 its own repository:
-[brahimlakhal3/whatscraft-server](https://github.com/brahimlakhal3/whatscraft-server).
+[brahimlakhal3/SERVER_WHATSCRAFT](https://github.com/brahimlakhal3/SERVER_WHATSCRAFT).
 
 ```
 app/                       Android application
@@ -87,8 +87,8 @@ account** removes the account and every message from the relay.
 ## Running the server locally
 
 ```sh
-git clone https://github.com/brahimlakhal3/whatscraft-server
-cd whatscraft-server
+git clone https://github.com/brahimlakhal3/SERVER_WHATSCRAFT
+cd SERVER_WHATSCRAFT
 cp .env.example .env            # optional; JWT_SECRET has a dev default
 bun install
 bun run src/index.ts            # http://localhost:8080

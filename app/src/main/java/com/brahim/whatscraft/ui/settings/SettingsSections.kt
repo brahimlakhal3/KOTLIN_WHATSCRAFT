@@ -770,7 +770,7 @@ internal fun AboutPage(
                 RowDivider()
                 AboutLine(
                     title = "Relay source",
-                    body = "github.com/brahimlakhal3/whatscraft-server",
+                    body = "github.com/brahimlakhal3/SERVER_WHATSCRAFT",
                     monospace = true,
                 )
             }

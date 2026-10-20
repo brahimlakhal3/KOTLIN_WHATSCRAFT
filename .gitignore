@@ -24,7 +24,7 @@ core.*
 keystore.properties
 *.pepk
 
-# The relay is its own repository: https://github.com/brahimlakhal3/whatscraft-server
+# The relay is its own repository: https://github.com/brahimlakhal3/SERVER_WHATSCRAFT
 /server/
 
 # Local tooling
